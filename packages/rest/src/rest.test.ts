@@ -19,7 +19,15 @@ const invoices = defineApp({
       description: "Email a draft invoice to its customer.",
       input: z.object({ id: z.string() }),
       output: z.object({ id: z.string(), key: z.string().optional() }),
+      visibility: ["model", "app", "rest"],
       handler: ({ id }, ctx) => ({ id, key: ctx.idempotencyKey }),
+    }),
+    preview: op({
+      description: "Render a draft for the invoice view; not part of the public API.",
+      input: z.object({ id: z.string() }),
+      output: z.object({ html: z.string() }),
+      visibility: ["app"],
+      handler: () => ({ html: "<p>draft</p>" }),
     }),
   },
 });
@@ -46,6 +54,11 @@ describe("REST surface", () => {
   it("passes the Idempotency-Key header to the handler", async () => {
     const res = await post("/api/invoices/ops/send", JSON.stringify({ id: "inv_1" }), { "idempotency-key": "k1" });
     expect(((await res.json()) as { data: unknown }).data).toEqual({ id: "inv_1", key: "k1" });
+  });
+
+  it("hides operations that are not visible on REST", async () => {
+    expect((await post("/api/invoices/ops/preview", JSON.stringify({ id: "inv_1" }))).status).toBe(404);
+    expect((await app.request("/api/invoices/ops/preview?id=inv_1")).status).toBe(404);
   });
 
   it("allows GET only for read-only operations", async () => {

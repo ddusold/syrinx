@@ -10,7 +10,13 @@ const echo = defineApp({
   version: "0.0.0",
   description: "Echoes its input.",
   operations: {
-    say: op({ description: "Return the input unchanged.", input: any, output: any, handler: (input) => input }),
+    say: op({
+      description: "Return the input unchanged.",
+      input: any,
+      output: any,
+      visibility: ["rest"],
+      handler: (input) => input,
+    }),
   },
 });
 

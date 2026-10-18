@@ -1,4 +1,4 @@
-import { SyrinxError, type InvokeOptions, type Registry } from "@syrinx/core";
+import { isVisible, SyrinxError, type InvokeOptions, type Registry } from "@syrinx/core";
 import { Hono, type Context } from "hono";
 
 export interface RestOptions<Deps = unknown> {
@@ -27,6 +27,7 @@ export function createRestApp<Deps>({ registry, deps }: RestOptions<Deps>): Hono
   const invoke = async (c: Context, input: unknown) => {
     const { app: appName, op } = c.req.param() as { app: string; op: string };
     const options: InvokeOptions = {
+      surface: "rest",
       signal: c.req.raw.signal,
       requestId: c.req.header("x-request-id") ?? crypto.randomUUID(),
     };
@@ -55,12 +56,14 @@ export function createRestApp<Deps>({ registry, deps }: RestOptions<Deps>): Hono
       name: found.name,
       version: found.version,
       description: found.description,
-      operations: Object.entries(found.operations).map(([name, o]) => ({
-        name,
-        description: o.description,
-        annotations: o.annotations,
-        href: `/api/${found.name}/ops/${name}`,
-      })),
+      operations: Object.entries(found.operations)
+        .filter(([, o]) => isVisible(o, "rest"))
+        .map(([name, o]) => ({
+          name,
+          description: o.description,
+          annotations: o.annotations,
+          href: `/api/${found.name}/ops/${name}`,
+        })),
     });
   });
 
@@ -80,7 +83,7 @@ export function createRestApp<Deps>({ registry, deps }: RestOptions<Deps>): Hono
   // Read-only operations may also be called with GET, taking input from the query string.
   app.get("/api/:app/ops/:op", (c) => {
     const operation = registry.get(c.req.param("app"), c.req.param("op"));
-    if (operation && !operation.annotations.readOnly) {
+    if (operation && isVisible(operation, "rest") && !operation.annotations.readOnly) {
       return c.body(null, 405, { allow: "POST" });
     }
     return invoke(c, c.req.query());
