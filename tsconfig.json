@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "paths": {
+      "@syrinx/core": ["./packages/core/src/index.ts"],
+      "@syrinx/rest": ["./packages/rest/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src", "vitest.config.ts"]
+}

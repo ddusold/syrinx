@@ -1,0 +1,22 @@
+{
+  "name": "@syrinx/rest",
+  "version": "0.0.0",
+  "description": "Standard REST surface for Syrinx apps, built on Hono.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@syrinx/core": "workspace:^",
+    "hono": "^4.10.0"
+  }
+}
