@@ -33,8 +33,8 @@ describe("REST surface", () => {
     expect(await (await app.request("/api")).json()).toEqual({
       apps: [{ name: "invoices", version: "1.0.0", href: "/api/invoices" }],
     });
-    const manifest = await (await app.request("/api/invoices")).json();
-    expect(manifest.operations.map((o: { name: string }) => o.name)).toEqual(["get", "send"]);
+    const manifest = (await (await app.request("/api/invoices")).json()) as { operations: { name: string }[] };
+    expect(manifest.operations.map((o) => o.name)).toEqual(["get", "send"]);
   });
 
   it("invokes an operation and wraps the result in the envelope", async () => {
@@ -45,7 +45,7 @@ describe("REST surface", () => {
 
   it("passes the Idempotency-Key header to the handler", async () => {
     const res = await post("/api/invoices/ops/send", JSON.stringify({ id: "inv_1" }), { "idempotency-key": "k1" });
-    expect((await res.json()).data).toEqual({ id: "inv_1", key: "k1" });
+    expect(((await res.json()) as { data: unknown }).data).toEqual({ id: "inv_1", key: "k1" });
   });
 
   it("allows GET only for read-only operations", async () => {

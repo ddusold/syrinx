@@ -7,8 +7,12 @@
     "node": ">=20"
   },
   "scripts": {
+    "prepare": "simple-git-hooks",
     "build": "pnpm -r build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
     "changeset": "changeset",
@@ -16,12 +20,30 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
+    "@eslint/js": "^10.0.1",
     "@syrinx/core": "workspace:*",
     "@syrinx/rest": "workspace:*",
     "@types/node": "^22.19.0",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.13.0",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10",
+    "simple-git-hooks": "^2.14.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.2",
     "vitest": "^3.2.7",
     "zod": "^4.1.0"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm exec lint-staged"
+  },
+  "lint-staged": {
+    "*.{ts,js,mjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": "prettier --write"
   }
 }

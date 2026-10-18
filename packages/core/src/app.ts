@@ -1,4 +1,4 @@
-import { errors } from "./errors.js";
+import type { errors } from "./errors.js";
 import type { StandardSchemaV1 } from "./standard-schema.js";
 
 export interface OperationAnnotations {
@@ -20,6 +20,7 @@ export interface Context<Deps = unknown> {
 export interface Operation<
   In extends StandardSchemaV1 = StandardSchemaV1,
   Out extends StandardSchemaV1 = StandardSchemaV1,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- an untyped Deps must accept any typed operation
   Deps = any,
 > {
   readonly kind: "operation";
@@ -34,6 +35,7 @@ export interface Operation<
   ): StandardSchemaV1.InferInput<Out> | Promise<StandardSchemaV1.InferInput<Out>>;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches Operation's Deps default
 export function op<In extends StandardSchemaV1, Out extends StandardSchemaV1, Deps = any>(
   def: Omit<Operation<In, Out, Deps>, "kind" | "annotations"> & { annotations?: OperationAnnotations },
 ): Operation<In, Out, Deps> {

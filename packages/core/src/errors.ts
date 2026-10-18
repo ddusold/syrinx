@@ -43,7 +43,7 @@ export const errors = {
   upstream: (message = "Upstream failure") => new SyrinxError("upstream", message),
 };
 
-export function toFieldIssues(issues: ReadonlyArray<StandardSchemaV1.Issue>): FieldIssue[] {
+export function toFieldIssues(issues: readonly StandardSchemaV1.Issue[]): FieldIssue[] {
   return issues.map((issue) => ({
     path: (issue.path ?? []).map((seg) => String(typeof seg === "object" ? seg.key : seg)).join("."),
     message: issue.message,

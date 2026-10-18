@@ -21,8 +21,10 @@ export function createRegistry(apps: readonly App[]): Registry {
     byName.set(app.name, app);
   }
 
-  const get = (app: string, operation: string) =>
-    Object.hasOwn(byName.get(app)?.operations ?? {}, operation) ? byName.get(app)!.operations[operation] : undefined;
+  const get = (app: string, operation: string) => {
+    const ops = byName.get(app)?.operations;
+    return ops && Object.hasOwn(ops, operation) ? ops[operation] : undefined;
+  };
 
   return {
     apps: byName,

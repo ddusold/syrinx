@@ -26,7 +26,10 @@ export function createRestApp<Deps>({ registry, deps }: RestOptions<Deps>): Hono
 
   const invoke = async (c: Context, input: unknown) => {
     const { app: appName, op } = c.req.param() as { app: string; op: string };
-    const options: InvokeOptions = { signal: c.req.raw.signal, requestId: c.req.header("x-request-id") ?? crypto.randomUUID() };
+    const options: InvokeOptions = {
+      signal: c.req.raw.signal,
+      requestId: c.req.header("x-request-id") ?? crypto.randomUUID(),
+    };
     if (deps !== undefined) options.deps = deps;
     const idempotencyKey = c.req.header("idempotency-key");
     if (idempotencyKey) options.idempotencyKey = idempotencyKey;

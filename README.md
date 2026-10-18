@@ -6,13 +6,13 @@ Declare an app once (typed operations, resources and views) and Syrinx serves it
 
 ## Packages
 
-| Package | Contents | Status |
-| --- | --- | --- |
-| `@syrinx/core` | `defineApp`, `op`, registry, invocation pipeline, typed errors | Started |
-| `@syrinx/rest` | REST surface on Hono: catalog, manifests, envelope, problem+json | Started |
-| `@syrinx/mcp` | MCP projection on the TypeScript SDK v2 | Phase 2 |
-| `@syrinx/ui`, `@syrinx/ui-vue`, `@syrinx/vite` | View contract, Vue binding, build plugin | Phase 3 |
-| `@syrinx/host`, `@syrinx/testing`, `@syrinx/cli` | Host, parity test clients, CLI | Phases 1–5 |
+| Package                                          | Contents                                                         | Status     |
+| ------------------------------------------------ | ---------------------------------------------------------------- | ---------- |
+| `@syrinx/core`                                   | `defineApp`, `op`, registry, invocation pipeline, typed errors   | Started    |
+| `@syrinx/rest`                                   | REST surface on Hono: catalog, manifests, envelope, problem+json | Started    |
+| `@syrinx/mcp`                                    | MCP projection on the TypeScript SDK v2                          | Phase 2    |
+| `@syrinx/ui`, `@syrinx/ui-vue`, `@syrinx/vite`   | View contract, Vue binding, build plugin                         | Phase 3    |
+| `@syrinx/host`, `@syrinx/testing`, `@syrinx/cli` | Host, parity test clients, CLI                                   | Phases 1–5 |
 
 ## Example
 
@@ -49,10 +49,14 @@ Requires Node 20+ and pnpm 10.
 ```sh
 pnpm install
 pnpm typecheck
+pnpm lint      # ESLint with typed typescript-eslint rules
+pnpm format    # Prettier; CI runs format:check
 pnpm test
 pnpm build
 pnpm smoke   # runtime smoke test; CI also runs it under Bun and Deno
 ```
+
+`pnpm install` also sets up a pre-commit hook that runs ESLint and Prettier on staged files. Set `SKIP_SIMPLE_GIT_HOOKS=1` to bypass it.
 
 Record changes to published packages with `pnpm changeset`.
 

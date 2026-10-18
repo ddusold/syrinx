@@ -31,7 +31,9 @@ describe("defineApp", () => {
 
   it("requires a description on every operation", () => {
     const blank = op({ description: " ", input: z.object({}), output: z.object({}), handler: () => ({}) });
-    expect(() => defineApp({ name: "a", version: "1", description: "x", operations: { blank } })).toThrow(/description/);
+    expect(() => defineApp({ name: "a", version: "1", description: "x", operations: { blank } })).toThrow(
+      /description/,
+    );
   });
 });
 
@@ -41,7 +43,10 @@ describe("createRegistry", () => {
   });
 
   it("invokes an operation with validated input", async () => {
-    await expect(registry.invoke("invoices", "get", { id: "inv_1" })).resolves.toEqual({ id: "inv_1", totalCents: 1200 });
+    await expect(registry.invoke("invoices", "get", { id: "inv_1" })).resolves.toEqual({
+      id: "inv_1",
+      totalCents: 1200,
+    });
   });
 
   it("reports input issues as a validation error with field paths", async () => {
