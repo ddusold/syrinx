@@ -3,9 +3,11 @@ import type { StandardSchemaV1 } from "./standard-schema.js";
 /** Stable error kinds. Each maps to one HTTP status and one problem type URI on every surface. */
 export const errorKinds = {
   validation: 400,
+  unauthenticated: 401,
   forbidden: 403,
   not_found: 404,
   conflict: 409,
+  unprocessable: 422,
   cancelled: 499,
   upstream: 502,
   internal: 500,
@@ -36,9 +38,11 @@ export class SyrinxError extends Error {
 
 export const errors = {
   validation: (message: string, issues: readonly FieldIssue[] = []) => new SyrinxError("validation", message, issues),
+  unauthenticated: (message = "Authentication required") => new SyrinxError("unauthenticated", message),
   forbidden: (message = "Forbidden") => new SyrinxError("forbidden", message),
   notFound: (message = "Not found") => new SyrinxError("not_found", message),
   conflict: (message = "Conflict") => new SyrinxError("conflict", message),
+  unprocessable: (message = "Unprocessable request") => new SyrinxError("unprocessable", message),
   cancelled: (message = "Cancelled") => new SyrinxError("cancelled", message),
   upstream: (message = "Upstream failure") => new SyrinxError("upstream", message),
 };

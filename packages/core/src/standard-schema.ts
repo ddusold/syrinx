@@ -41,3 +41,30 @@ export declare namespace StandardSchemaV1 {
   export type InferInput<Schema extends StandardSchemaV1> = NonNullable<Schema["~standard"]["types"]>["input"];
   export type InferOutput<Schema extends StandardSchemaV1> = NonNullable<Schema["~standard"]["types"]>["output"];
 }
+
+// Standard JSON Schema v1 (https://standardschema.dev/json-schema), the companion spec for JSON Schema conversion.
+
+export interface StandardJSONSchemaV1<Input = unknown, Output = Input> {
+  readonly "~standard": StandardJSONSchemaV1.Props<Input, Output>;
+}
+
+export declare namespace StandardJSONSchemaV1 {
+  export interface Props<Input = unknown, Output = Input> {
+    readonly version: 1;
+    readonly vendor: string;
+    readonly types?: StandardSchemaV1.Types<Input, Output> | undefined;
+    readonly jsonSchema: Converter;
+  }
+
+  export interface Converter {
+    readonly input: (options: Options) => Record<string, unknown>;
+    readonly output: (options: Options) => Record<string, unknown>;
+  }
+
+  export type Target = "draft-2020-12" | "draft-07" | "openapi-3.0" | ({} & string);
+
+  export interface Options {
+    readonly target: Target;
+    readonly libraryOptions?: Record<string, unknown> | undefined;
+  }
+}

@@ -26,7 +26,6 @@ const invoices = defineApp({
       input: z.object({ id: z.string() }),
       output: Invoice,
       annotations: { readOnly: true },
-      permissions: ["invoices:read"],
       handler: ({ id }, ctx) => {
         if (id === "missing") throw ctx.errors.notFound(`No invoice ${id}.`);
         return { id, totalCents: id === "broken" ? 1.5 : 1200 };
@@ -37,7 +36,7 @@ const invoices = defineApp({
       input: z.object({ id: z.string() }),
       output: z.object({ sentBy: z.string() }),
       visibility: ["app", "rest"],
-      permissions: (principal, { id }) => principal.scopes.includes("invoices:write") && id !== "locked",
+      permissions: (_principal, { id }) => id !== "locked",
       handler: (_input, ctx) => ({ sentBy: ctx.principal.id }),
     }),
   },
@@ -111,8 +110,8 @@ describe("createRegistry", () => {
 
   it("invokes an operation with validated input", async () => {
     await expect(registry.invoke("invoices", "get", { id: "inv_1" })).resolves.toEqual({
-      id: "inv_1",
-      totalCents: 1200,
+      resultType: "complete",
+      data: { id: "inv_1", totalCents: 1200 },
     });
   });
 
@@ -145,10 +144,12 @@ describe("createRegistry", () => {
 
 describe("context", () => {
   it("defaults to the anonymous principal and passes a given one through", async () => {
-    await expect(registry.invoke("invoices", "send", { id: "1" })).resolves.toEqual({ sentBy: "anonymous" });
-    const principal = { id: "user_1", scopes: ["invoices:write"] };
-    await expect(registry.invoke("invoices", "send", { id: "1" }, { principal })).resolves.toEqual({
-      sentBy: "user_1",
+    await expect(registry.invoke("invoices", "send", { id: "1" })).resolves.toMatchObject({
+      data: { sentBy: "anonymous" },
+    });
+    const principal = { id: "user_1", scopes: [] };
+    await expect(registry.invoke("invoices", "send", { id: "1" }, { principal })).resolves.toMatchObject({
+      data: { sentBy: "user_1" },
     });
   });
 

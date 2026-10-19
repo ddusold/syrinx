@@ -8,9 +8,10 @@ export default defineConfig({
     alias: {
       "@syrinx/core": src("core"),
       "@syrinx/rest": src("rest"),
+      "@syrinx/testing": src("testing"),
     },
   },
   test: {
-    include: ["packages/*/src/**/*.test.ts"],
+    include: ["packages/*/src/**/*.test.ts", "spikes/*/src/**/*.test.ts", "examples/*/src/**/*.test.ts"],
   },
 });

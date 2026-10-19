@@ -1,0 +1,109 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`toJsonSchema > inlines shared definitions and drops the $schema dialect 1`] = `
+{
+  "properties": {
+    "billing": {
+      "properties": {
+        "city": {
+          "type": "string",
+        },
+      },
+      "required": [
+        "city",
+      ],
+      "type": "object",
+    },
+    "shipping": {
+      "properties": {
+        "city": {
+          "type": "string",
+        },
+      },
+      "required": [
+        "city",
+      ],
+      "type": "object",
+    },
+  },
+  "required": [
+    "billing",
+    "shipping",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`toJsonSchema > keeps root recursion as a local reference 1`] = `
+{
+  "properties": {
+    "children": {
+      "items": {
+        "$ref": "#",
+      },
+      "type": "array",
+    },
+    "name": {
+      "type": "string",
+    },
+  },
+  "required": [
+    "name",
+    "children",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`toJsonSchema > keeps self-referencing definitions in $defs and inlines the rest 1`] = `
+{
+  "$defs": {
+    "Category": {
+      "properties": {
+        "name": {
+          "type": "string",
+        },
+        "parent": {
+          "$ref": "#/$defs/Category",
+        },
+      },
+      "required": [
+        "name",
+      ],
+      "type": "object",
+    },
+  },
+  "properties": {
+    "category": {
+      "properties": {
+        "name": {
+          "type": "string",
+        },
+        "parent": {
+          "$ref": "#/$defs/Category",
+        },
+      },
+      "required": [
+        "name",
+      ],
+      "type": "object",
+    },
+    "tag": {
+      "properties": {
+        "label": {
+          "type": "string",
+        },
+      },
+      "required": [
+        "label",
+      ],
+      "type": "object",
+    },
+  },
+  "required": [
+    "category",
+    "tag",
+  ],
+  "type": "object",
+}
+`;

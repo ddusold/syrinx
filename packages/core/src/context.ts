@@ -1,4 +1,6 @@
 import type { errors } from "./errors.js";
+import type { Schema } from "./schema.js";
+import type { StandardSchemaV1 } from "./standard-schema.js";
 
 /** The surfaces an operation can be reached from. */
 export type Surface = "model" | "app" | "rest";
@@ -37,8 +39,15 @@ export interface Span {
   end(): void;
 }
 
+/** W3C trace context from the caller: HTTP headers on REST, `_meta` on MCP. */
+export interface TraceContext {
+  traceparent: string;
+  tracestate?: string;
+}
+
 export interface Tracer {
-  startSpan(name: string, attributes: Attributes): Span;
+  /** Starts a span, as a child of the caller's trace when `parent` is given. */
+  startSpan(name: string, attributes: Attributes, parent?: TraceContext): Span;
 }
 
 const noop = () => undefined;
@@ -59,5 +68,12 @@ export interface Context<Deps = unknown> {
   log: Logger;
   /** The invocation's span. The framework ends it; handlers only annotate it. */
   span: Pick<Span, "setAttribute" | "addEvent">;
+  /**
+   * Asks the caller to confirm before continuing. On the first run this ends the call with `input_required`; the
+   * retry re-runs the handler from the top and this returns the answer. Ask before any side effects.
+   */
+  confirm(message: string): Promise<boolean>;
+  /** Like confirm, but collects a value matching `schema`. Undefined when the caller declines. */
+  ask<S extends Schema>(message: string, schema: S): Promise<StandardSchemaV1.InferOutput<S> | undefined>;
   errors: typeof errors;
 }

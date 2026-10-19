@@ -1,4 +1,5 @@
 import { surfaces, type Context, type Principal, type Surface } from "./context.js";
+import { toJsonSchema, type Schema, type SchemaSide } from "./schema.js";
 import type { StandardSchemaV1 } from "./standard-schema.js";
 
 export interface OperationAnnotations {
@@ -6,6 +7,11 @@ export interface OperationAnnotations {
   readOnly?: boolean;
   destructive?: boolean;
   idempotent?: boolean;
+  /**
+   * The operation may answer `input_required` (it calls ctx.confirm / ctx.ask, or declares `confirm`). Documented in
+   * OpenAPI and tool metadata; calling confirm or ask without it fails, so the documentation cannot drift.
+   */
+  asks?: boolean;
 }
 
 /**
@@ -20,8 +26,8 @@ export type Permissions<Input> =
 type Output<S extends StandardSchemaV1> = StandardSchemaV1.InferInput<S> | Promise<StandardSchemaV1.InferInput<S>>;
 
 export interface Operation<
-  In extends StandardSchemaV1 = StandardSchemaV1,
-  Out extends StandardSchemaV1 = StandardSchemaV1,
+  In extends Schema = Schema,
+  Out extends Schema = Schema,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- an untyped Deps must accept any typed operation
   Deps = any,
 > {
@@ -33,19 +39,28 @@ export interface Operation<
   /** Where the operation can be called from. Empty only when a write left it undeclared, which defineApp rejects. */
   readonly visibility: readonly Surface[];
   readonly permissions?: Permissions<StandardSchemaV1.InferOutput<In>>;
+  /**
+   * Asks the caller to confirm before the handler runs: return the question, or undefined to skip it. It runs on
+   * every round, so keep it free of side effects; the handler then runs exactly once. Declining fails the call as
+   * `cancelled`.
+   */
+  confirm?(
+    input: StandardSchemaV1.InferOutput<In>,
+    ctx: Context<Deps>,
+  ): string | undefined | Promise<string | undefined>;
   // Method syntax keeps the parameter bivariant, so a typed operation fits in Record<string, Operation>.
   handler(input: StandardSchemaV1.InferOutput<In>, ctx: Context<Deps>): Output<Out>;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches Operation's Deps default
-export function op<In extends StandardSchemaV1, Out extends StandardSchemaV1, Deps = any>(
+export function op<In extends Schema, Out extends Schema, Deps = any>(
   def: Omit<Operation<In, Out, Deps>, "kind" | "annotations" | "visibility"> & {
     annotations?: OperationAnnotations;
     /** Defaults to every surface for read-only operations. Writes must opt in explicitly. */
     visibility?: readonly Surface[];
   },
 ): Operation<In, Out, Deps> {
-  const annotations = def.annotations ?? {};
+  const annotations = def.confirm ? { ...def.annotations, asks: true } : (def.annotations ?? {});
   const visibility = def.visibility ?? (annotations.readOnly ? surfaces : []);
   return Object.freeze({ ...def, kind: "operation", annotations, visibility: Object.freeze([...visibility]) });
 }
@@ -59,7 +74,7 @@ export type UriParams<T extends string> = Record<TemplateVariables<T>, string>;
 
 export interface Resource<
   Uri extends string = string,
-  Out extends StandardSchemaV1 = StandardSchemaV1,
+  Out extends Schema = Schema,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- an untyped Deps must accept any typed resource
   Deps = any,
 > {
@@ -73,7 +88,7 @@ export interface Resource<
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches Resource's Deps default
-export function resource<const Uri extends string, Out extends StandardSchemaV1, Deps = any>(
+export function resource<const Uri extends string, Out extends Schema, Deps = any>(
   def: Omit<Resource<Uri, Out, Deps>, "kind">,
 ): Resource<Uri, Out, Deps> {
   return Object.freeze({ ...def, kind: "resource" });
@@ -111,6 +126,31 @@ export function templateVariables(uri: string): string[] {
   return [...uri.matchAll(/\{([^}]+)\}/g)].map((m) => m[1] ?? "");
 }
 
+function checkPublishable(id: string, schema: StandardSchemaV1, side: SchemaSide) {
+  try {
+    toJsonSchema(schema, side);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new TypeError(`${id} ${side} schema cannot be published as JSON Schema: ${reason}`, { cause: error });
+  }
+}
+
+/** Matches a concrete URI against a level-1 template, returning its variables, or undefined when it does not fit. */
+export function matchUriTemplate(template: string, uri: string): Record<string, string> | undefined {
+  const names = templateVariables(template);
+  const pattern = template
+    .split(/\{[^}]+\}/)
+    .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("([^/]+)");
+  const match = new RegExp(`^${pattern}$`).exec(uri);
+  if (!match) return undefined;
+  try {
+    return Object.fromEntries(names.map((name, i) => [name, decodeURIComponent(match[i + 1] ?? "")]));
+  } catch {
+    return undefined; // malformed percent-encoding
+  }
+}
+
 export function defineApp<
   Ops extends Record<string, Operation>,
   Res extends Record<string, Resource> = Record<string, never>,
@@ -127,6 +167,8 @@ export function defineApp<
     }
     const unknown = operation.visibility.find((s) => !surfaces.includes(s));
     if (unknown) throw new TypeError(`${id} has unknown visibility "${unknown}".`);
+    checkPublishable(id, operation.input, "input");
+    checkPublishable(id, operation.output, "output");
   }
 
   const resources = def.resources ?? ({} as Res);
@@ -141,6 +183,7 @@ export function defineApp<
     if (new Set(vars).size !== vars.length) throw new TypeError(`${id} repeats a variable in "${res.uri}".`);
     if (uris.has(res.uri)) throw new TypeError(`${id} reuses URI template "${res.uri}".`);
     uris.add(res.uri);
+    checkPublishable(id, res.output, "output");
   }
 
   return Object.freeze({

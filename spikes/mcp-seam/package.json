@@ -1,0 +1,16 @@
+{
+  "name": "@syrinx/spike-mcp-seam",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Throwaway spike: one Syrinx registry served over REST and MCP (SDK v2) side by side.",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/hono": "^2.0.2",
+    "@modelcontextprotocol/server": "^2.3.1",
+    "@syrinx/core": "workspace:*",
+    "@syrinx/rest": "workspace:*",
+    "hono": "^4.13.13",
+    "zod": "^4.6.7"
+  }
+}

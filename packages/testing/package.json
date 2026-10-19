@@ -1,0 +1,23 @@
+{
+  "name": "@syrinx/testing",
+  "version": "0.0.0",
+  "description": "Clients and parity checks for testing Syrinx apps on every surface.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@syrinx/core": "workspace:^"
+  }
+}

@@ -1,5 +1,7 @@
 packages:
   - packages/*
+  - spikes/*
+  - examples/*
 
 ignoredBuiltDependencies:
   - simple-git-hooks

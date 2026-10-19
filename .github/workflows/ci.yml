@@ -30,6 +30,20 @@ jobs:
       - run: pnpm build
       - run: pnpm smoke
 
+  openapi:
+    name: Lint generated OpenAPI (Spectral)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # Spectral needs Node 22+
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm lint:openapi
+
   runtimes:
     name: Smoke test on ${{ matrix.runtime }}
     runs-on: ubuntu-latest

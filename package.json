@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "lint:openapi": "pnpm -s --filter @syrinx/example-invoices openapi > examples/invoices/openapi.json && spectral lint examples/invoices/openapi.json --fail-severity=warn",
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
     "changeset": "changeset",
@@ -21,8 +22,10 @@
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
     "@eslint/js": "^10.0.1",
+    "@stoplight/spectral-cli": "^6.17.0",
     "@syrinx/core": "workspace:*",
     "@syrinx/rest": "workspace:*",
+    "@syrinx/testing": "workspace:*",
     "@types/node": "^22.19.0",
     "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",

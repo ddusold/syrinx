@@ -6,13 +6,14 @@ Declare an app once (typed operations, resources and views) and Syrinx serves it
 
 ## Packages
 
-| Package                                          | Contents                                                         | Status     |
-| ------------------------------------------------ | ---------------------------------------------------------------- | ---------- |
-| `@syrinx/core`                                   | `defineApp`, `op`, registry, invocation pipeline, typed errors   | Started    |
-| `@syrinx/rest`                                   | REST surface on Hono: catalog, manifests, envelope, problem+json | Started    |
-| `@syrinx/mcp`                                    | MCP projection on the TypeScript SDK v2                          | Phase 2    |
-| `@syrinx/ui`, `@syrinx/ui-vue`, `@syrinx/vite`   | View contract, Vue binding, build plugin                         | Phase 3    |
-| `@syrinx/host`, `@syrinx/testing`, `@syrinx/cli` | Host, parity test clients, CLI                                   | Phases 1–5 |
+| Package                                        | Contents                                                                                               | Status     |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ---------- |
+| `@syrinx/core`                                 | `defineApp`, `op`, `resource`, JSON Schema conversion, policy pipeline, input round trips, idempotency | Phase 1    |
+| `@syrinx/rest`                                 | REST surface on Hono: catalog, manifests, envelope, problem+json, resources, OpenAPI 3.1               | Phase 1    |
+| `@syrinx/testing`                              | In-process and REST clients, parity checks                                                             | Phase 1    |
+| `@syrinx/mcp`                                  | MCP projection on the TypeScript SDK v2                                                                | Phase 2    |
+| `@syrinx/ui`, `@syrinx/ui-vue`, `@syrinx/vite` | View contract, Vue binding, build plugin                                                               | Phase 3    |
+| `@syrinx/host`, `@syrinx/cli`                  | Host, CLI                                                                                              | Phases 4–5 |
 
 ## Example
 
@@ -37,7 +38,8 @@ const invoices = defineApp({
 });
 
 export default createRestApp({ registry: createRegistry([invoices]) });
-// POST /api/invoices/ops/get {"id":"inv_1"} -> {"resultType":"complete","data":{"id":"inv_1","totalCents":1200}}
+// POST /api/invoices/ops/get {"id":"inv_1"}
+// -> {"resultType":"complete","data":{"id":"inv_1","totalCents":1200},"meta":{"requestId":"…"}}
 ```
 
 Schemas use [Standard Schema](https://standardschema.dev), so Zod, Valibot and ArkType all work.
@@ -54,7 +56,10 @@ pnpm format    # Prettier; CI runs format:check
 pnpm test
 pnpm build
 pnpm smoke   # runtime smoke test; CI also runs it under Bun and Deno
+pnpm lint:openapi   # Spectral on the example's generated OpenAPI (Node 22+)
 ```
+
+Run the example app with `pnpm --filter @syrinx/example-invoices start` (after `pnpm build`), then try `curl -H "Authorization: Bearer reader" localhost:3000/api/invoices/ops/list`. The MCP spike in `spikes/mcp-seam` serves the same registry over MCP.
 
 `pnpm install` also sets up a pre-commit hook that runs ESLint and Prettier on staged files. Set `SKIP_SIMPLE_GIT_HOOKS=1` to bypass it.
 
