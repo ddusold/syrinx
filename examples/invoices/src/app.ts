@@ -1,4 +1,4 @@
-import { defineApp, op, resource, type Context } from "@syrinx/core";
+import { defineApp, op, prompt, resource, type Context } from "@syrinx/core";
 import { z } from "zod";
 
 export const Invoice = z.object({
@@ -95,10 +95,30 @@ export const invoices = defineApp({
   resources: {
     invoice: resource({
       uri: "invoice://{id}",
-      description: "One invoice as JSON.",
+      description: "One invoice as JSON, addressed by its id.",
       output: Invoice,
       permissions: ["invoices:read"],
       read: ({ id }, ctx: Ctx) => load(ctx, id),
+    }),
+  },
+
+  prompts: {
+    chase: prompt({
+      title: "Chase payment",
+      description: "Draft a polite payment reminder for an unpaid invoice.",
+      args: z.object({ id: z.string().min(1).describe("Invoice id, such as inv_1.") }),
+      permissions: ["invoices:read"],
+      // Suggests unpaid invoice ids as the user types.
+      complete: {
+        id: async (value, _context, ctx: Ctx) =>
+          (await ctx.deps.store.list({ status: "draft", limit: 100 }))
+            .map((i) => i.id)
+            .filter((id) => id.startsWith(value)),
+      },
+      render: async ({ id }, ctx: Ctx) => {
+        const invoice = await load(ctx, id);
+        return `Write a short, friendly email to ${invoice.customer} reminding them that invoice ${id} for ${dollars(invoice.totalCents)} is due.`;
+      },
     }),
   },
 });

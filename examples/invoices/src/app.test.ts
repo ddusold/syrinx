@@ -1,27 +1,37 @@
-import { checkParity, createInProcessClient, createRestClient, type Outcome, type SyrinxClient } from "@syrinx/testing";
-import { beforeEach, describe, expect, it } from "vitest";
+import {
+  checkParity,
+  createInProcessClient,
+  createMcpClient,
+  createRestClient,
+  type Outcome,
+  type SyrinxClient,
+} from "@syrinx/testing";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createInvoicesHost, demoPrincipals } from "./host.js";
 
-let clients: { inProcess: SyrinxClient; rest: SyrinxClient };
+let clients: { inProcess: SyrinxClient; rest: SyrinxClient; mcp: ReturnType<typeof createMcpClient> };
 let audit: string[];
 
 function setup(principal: "reader" | "writer" | "anonymous") {
   audit = [];
   const host = createInvoicesHost({ audit: (r) => audit.push(`${r.operation}:${r.outcome}`) });
   const known = principal === "anonymous" ? undefined : demoPrincipals[principal];
+  const headers: Record<string, string> = principal === "anonymous" ? {} : { authorization: `Bearer ${principal}` };
   clients = {
     inProcess: createInProcessClient(host.registry, { deps: host.deps, ...(known ? { principal: known } : {}) }),
-    rest: createRestClient({
-      fetch: host.app.fetch,
-      headers: principal === "anonymous" ? {} : { authorization: `Bearer ${principal}` },
-    }),
+    rest: createRestClient({ fetch: host.app.fetch, headers }),
+    mcp: createMcpClient({ fetch: host.app.fetch, headers }),
   };
 }
 
-const both = () => [clients.inProcess, clients.rest];
+afterEach(async () => {
+  await clients.mcp.close();
+});
+
+const every = () => [clients.inProcess, clients.rest, clients.mcp];
 const data = (outcome: Outcome) => (outcome.status === "complete" ? outcome.data : outcome);
 
-describe("parity between in-process and REST", () => {
+describe("parity between in-process, REST and MCP", () => {
   beforeEach(() => {
     setup("reader");
   });
@@ -33,16 +43,55 @@ describe("parity between in-process and REST", () => {
     ["list", {}],
     ["list", { status: "sent" }],
     ["list", { limit: 500 }],
-    ["create", { customer: "Initech", totalCents: 100 }],
   ])("%s %j", async (operation, input) => {
-    const { differences } = await checkParity(both(), (c) => c.invoke("invoices", operation, input));
+    const { differences } = await checkParity(every(), (c) => c.invoke("invoices", operation, input));
     expect(differences).toEqual([]);
   });
 
   it("reads resources the same way", async () => {
-    const { outcomes, differences } = await checkParity(both(), (c) => c.read("invoices", "invoice", { id: "inv_1" }));
+    const { outcomes, differences } = await checkParity(every(), (c) => c.read("invoices", "invoice", { id: "inv_1" }));
     expect(differences).toEqual([]);
     expect(outcomes.rest).toMatchObject({ status: "complete", data: { customer: "Acme Corp" } });
+  });
+});
+
+describe("prompts", () => {
+  beforeEach(() => {
+    setup("reader");
+  });
+
+  it.each([{ id: "inv_1" }, { id: "" }, { id: "nope" }])("render the same on every surface %j", async (args) => {
+    const { outcomes, differences } = await checkParity(every(), (c) => c.render("invoices", "chase", args));
+    expect(differences).toEqual([]);
+    if (args.id === "inv_1") {
+      expect(outcomes.mcp).toMatchObject({ status: "complete", data: { messages: [{ role: "user" }] } });
+      expect(JSON.stringify(outcomes.mcp)).toContain("Acme Corp");
+    }
+  });
+});
+
+describe("completion", () => {
+  it("suggests draft invoice ids for the chase prompt", async () => {
+    setup("reader");
+    const host = createInvoicesHost();
+    const res = await host.app.request("/api/invoices/complete", {
+      method: "POST",
+      headers: { authorization: "Bearer reader", "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "chase", argument: "id", value: "inv" }),
+    });
+    expect(await res.json()).toMatchObject({ data: { values: ["inv_1"], total: 1, hasMore: false } });
+  });
+});
+
+describe("MCP listing", () => {
+  it("hides tools a caller lacks scopes for, where REST answers forbidden", async () => {
+    setup("reader");
+    expect(await clients.mcp.invoke("invoices", "create", { customer: "X", totalCents: 1 })).toMatchObject({
+      kind: "not_found",
+    });
+    expect(await clients.rest.invoke("invoices", "create", { customer: "X", totalCents: 1 })).toMatchObject({
+      kind: "forbidden",
+    });
   });
 });
 
@@ -62,13 +111,13 @@ describe("sending an invoice", () => {
     setup("writer");
   });
 
-  it.each(["inProcess", "rest"] as const)("confirms before sending (%s)", async (surface) => {
+  it.each(["inProcess", "rest", "mcp"] as const)("confirms before sending (%s)", async (surface) => {
     const client = clients[surface];
     const created = data(await client.invoke("invoices", "create", { customer: "Initech", totalCents: 4200 }));
     const { id } = created as { id: string };
 
     const asked = await client.invoke("invoices", "send", { id });
-    if (asked.status !== "input_required") throw new Error(`expected a question, got ${asked.status}`);
+    if (asked.status !== "input_required") throw new Error(`expected a question, got ${JSON.stringify(asked)}`);
     expect(Object.values(asked.inputRequests)).toEqual([
       { kind: "confirm", message: `Send invoice ${id} for $42.00 to Initech?` },
     ]);

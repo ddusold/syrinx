@@ -1,0 +1,21 @@
+{
+  "name": "@syrinx/example-conformance",
+  "version": "0.0.0",
+  "private": true,
+  "description": "MCP conformance suite fixtures written as a Syrinx app.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "conformance": "conformance server --url http://localhost:3001/mcp/conformance --requirements 2026-07-28 --expected-failures expected-failures.yaml"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@syrinx/core": "workspace:*",
+    "@syrinx/mcp": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/conformance": "0.2.0-alpha.12",
+    "tsx": "^4.23.15"
+  }
+}

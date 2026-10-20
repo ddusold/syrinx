@@ -1,4 +1,5 @@
 import type { errors } from "./errors.js";
+import type { AskOptions } from "./interaction.js";
 import type { Schema } from "./schema.js";
 import type { StandardSchemaV1 } from "./standard-schema.js";
 
@@ -69,11 +70,20 @@ export interface Context<Deps = unknown> {
   /** The invocation's span. The framework ends it; handlers only annotate it. */
   span: Pick<Span, "setAttribute" | "addEvent">;
   /**
+   * Whether the caller can answer questions (an MCP client that declared elicitation, any REST client). When false,
+   * confirm resolves false and ask resolves undefined without asking, as if declined; check it to adapt instead.
+   */
+  canAsk: boolean;
+  /**
    * Asks the caller to confirm before continuing. On the first run this ends the call with `input_required`; the
    * retry re-runs the handler from the top and this returns the answer. Ask before any side effects.
    */
-  confirm(message: string): Promise<boolean>;
+  confirm(message: string, options?: AskOptions): Promise<boolean>;
   /** Like confirm, but collects a value matching `schema`. Undefined when the caller declines. */
-  ask<S extends Schema>(message: string, schema: S): Promise<StandardSchemaV1.InferOutput<S> | undefined>;
+  ask<S extends Schema>(
+    message: string,
+    schema: S,
+    options?: AskOptions,
+  ): Promise<StandardSchemaV1.InferOutput<S> | undefined>;
   errors: typeof errors;
 }

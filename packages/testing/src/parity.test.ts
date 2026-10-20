@@ -5,6 +5,7 @@ const fake = (surface: string, outcome: Outcome): SyrinxClient => ({
   surface,
   invoke: () => Promise.resolve(outcome),
   read: () => Promise.resolve(outcome),
+  render: () => Promise.resolve(outcome),
 });
 
 describe("checkParity", () => {

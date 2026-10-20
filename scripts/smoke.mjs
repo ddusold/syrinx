@@ -1,6 +1,7 @@
 // Runtime smoke test against the built packages. Uses only web-standard APIs,
 // so the same file runs under Node (`node`), Bun (`bun`) and Deno (`deno run`).
 import { createMemoryIdempotencyStore, createRegistry, defineApp, op } from "@syrinx/core";
+import { createMcpSurface } from "@syrinx/mcp";
 import { createRestApp } from "@syrinx/rest";
 
 const any = {
@@ -21,7 +22,7 @@ const echo = defineApp({
       description: "Return the input unchanged.",
       input: any,
       output: any,
-      visibility: ["rest"],
+      visibility: ["rest", "model"],
       handler: (input) => input,
     }),
     // Confirmation and idempotency exercise Web Crypto: sealed request state and input hashing.
@@ -29,7 +30,7 @@ const echo = defineApp({
       description: "Return the input after the caller confirms.",
       input: any,
       output: any,
-      visibility: ["rest"],
+      visibility: ["rest", "model"],
       confirm: () => "Shout it?",
       handler: (input) => input,
     }),
@@ -69,5 +70,40 @@ const resumed = await post("/api/echo/ops/shout/resume", {
   inputResponses: { [question]: { action: "accept" } },
 });
 check(resumed.status === 200 && resumed.body.data?.hello === "world", "resume", resumed);
+
+// The MCP surface over the same registry, as a 2026-07-28 client would call it.
+const mcp = createMcpSurface({ registry, name: "smoke", version: "0.0.0" });
+const rpc = async (method, params = {}) => {
+  const res = await mcp.fetch(
+    new Request("http://localhost/mcp/echo", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2026-07-28",
+        "mcp-method": method,
+        ...(params.name ? { "mcp-name": params.name } : {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        params: {
+          ...params,
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { name: "smoke", version: "0.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      }),
+    }),
+  );
+  return { status: res.status, body: await res.json() };
+};
+const listed = await rpc("tools/list");
+check(listed.body.result?.tools?.map((t) => t.name).join() === "say,shout", "mcp tools/list", listed);
+const called = await rpc("tools/call", { name: "say", arguments: { hello: "mcp" } });
+check(called.body.result?.structuredContent?.hello === "mcp", "mcp tools/call", called);
 
 console.log("smoke ok");

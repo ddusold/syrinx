@@ -16,6 +16,7 @@
     "lint:openapi": "pnpm -s --filter @syrinx/example-invoices openapi > examples/invoices/openapi.json && spectral lint examples/invoices/openapi.json --fail-severity=warn",
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
+    "conformance": "pnpm -s --filter @syrinx/example-conformance conformance",
     "changeset": "changeset",
     "release": "pnpm build && changeset publish"
   },
@@ -24,6 +25,7 @@
     "@eslint/js": "^10.0.1",
     "@stoplight/spectral-cli": "^6.17.0",
     "@syrinx/core": "workspace:*",
+    "@syrinx/mcp": "workspace:*",
     "@syrinx/rest": "workspace:*",
     "@syrinx/testing": "workspace:*",
     "@types/node": "^22.19.0",

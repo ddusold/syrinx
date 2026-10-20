@@ -1,0 +1,16 @@
+# Required 2026-07-28 server scenarios Syrinx does not pass yet, and why. The suite fails CI on any other failure,
+# and on any entry here that starts passing, so this list stays exact.
+server:
+  # Decided: every exchange is one JSON response, so there are no mid-call progress notifications.
+  - tools-call-with-progress
+  # Decided: sampling and roots are deprecated and not adopted, so Syrinx never asks for them. The stateless
+  # scenario's undeclared-capability probe specifically expects a sampling requirement, and the capability check
+  # expects a sampling question from a client that declares only sampling (Syrinx correctly sends no elicitation).
+  - input-required-result-basic-sampling
+  - input-required-result-basic-list-roots
+  - input-required-result-multiple-input-requests
+  - input-required-result-capability-check
+  - server-stateless
+  # Decided: the scenario sends answers with no requestState (a SHOULD-level warning). Syrinx only accepts
+  # answers that come back with the requestState it minted, which binds them to the question, caller and input.
+  - input-required-result-ignore-extra-params

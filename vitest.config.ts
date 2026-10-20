@@ -7,11 +7,13 @@ export default defineConfig({
   resolve: {
     alias: {
       "@syrinx/core": src("core"),
+      "@syrinx/mcp/stdio": fileURLToPath(new URL("./packages/mcp/src/stdio.ts", import.meta.url)),
+      "@syrinx/mcp": src("mcp"),
       "@syrinx/rest": src("rest"),
       "@syrinx/testing": src("testing"),
     },
   },
   test: {
-    include: ["packages/*/src/**/*.test.ts", "spikes/*/src/**/*.test.ts", "examples/*/src/**/*.test.ts"],
+    include: ["packages/*/src/**/*.test.ts", "examples/*/src/**/*.test.ts"],
   },
 });
