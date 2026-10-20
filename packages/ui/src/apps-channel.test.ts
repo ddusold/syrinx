@@ -70,7 +70,10 @@ describe("MCP Apps channel", () => {
   it("sends plain JSON, so proxies such as Vue refs can cross postMessage", () => {
     const { host, sent } = fakeHost();
     const reactive = new Proxy({ id: "inv_1" }, {});
-    void open(host).request("tools/call", { name: "send", arguments: reactive });
+    // Never answered; close() in afterEach rejects it, so swallow that here.
+    open(host)
+      .request("tools/call", { name: "send", arguments: reactive })
+      .catch(() => undefined);
     const sentArgs = sent[0]?.params?.arguments;
     expect(sentArgs).toEqual({ id: "inv_1" });
     expect(sentArgs).not.toBe(reactive);
