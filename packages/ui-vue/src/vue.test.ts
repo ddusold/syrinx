@@ -1,9 +1,16 @@
 // @vitest-environment happy-dom
 import type { ViewBoot } from "@syrinx/core";
-import { defineViewContext, startView, type BridgeResult, type HostBridge, type ViewModule } from "@syrinx/ui";
+import {
+  defineViewContext,
+  startView,
+  type BridgeResult,
+  type HostBridge,
+  type HostContext,
+  type ViewModule,
+} from "@syrinx/ui";
 import { describe, expect, it, vi } from "vitest";
 import { defineComponent, h, nextTick } from "vue";
-import { Embed, toView, useView, useViewContext, ViewContext, ViewPart } from "./index.js";
+import { Embed, toView, useView, useViewContext, ViewContext, ViewFrame, ViewPart } from "./index.js";
 
 interface Payload {
   items: { id: string; customer: string }[];
@@ -199,5 +206,40 @@ describe("Vue views", () => {
     await startView({ views: { "invoices/browser": toView(Lonely) }, boot, bridge: bridge().b, element });
     expect(element.textContent).toMatch(/not in this bundle/);
     expect(() => useView()).toThrow(/inside a Syrinx view/);
+  });
+});
+
+describe("ViewFrame", () => {
+  const Framed = defineComponent(() => () => h(ViewFrame, null, () => h("p", { class: "content" }, "inside")));
+
+  async function frameStyle(host: HostContext, props?: { maxHeight: number }) {
+    document.body.innerHTML = `<div id="root"></div>`;
+    const element = must(document.querySelector<HTMLElement>("#root"));
+    const framed = props ? defineComponent(() => () => h(ViewFrame, props, () => h("p", "x"))) : Framed;
+    const b: HostBridge = {
+      connect: () => Promise.resolve(),
+      host: () => host,
+      onHostContext: () => undefined,
+      onResult: () => undefined,
+      call: () => Promise.resolve({ data: {} }),
+      openLink: () => Promise.resolve(),
+    };
+    await startView({ views: { "invoices/browser": toView(framed) }, boot, bridge: b, element });
+    await nextTick();
+    return must(element.querySelector<HTMLElement>(".syrinx-frame"));
+  }
+
+  it("caps and scrolls at 640px by default, at the host's limit when it sends one, and not at all fullscreen", async () => {
+    const byDefault = await frameStyle({ displayMode: "inline" });
+    expect(byDefault.style.maxHeight).toBe("640px");
+    expect(byDefault.style.overflowY).toBe("auto");
+    expect(byDefault.querySelector(".content")?.textContent).toBe("inside");
+
+    expect((await frameStyle({ containerDimensions: { maxHeight: 480 } })).style.maxHeight).toBe("480px");
+    expect((await frameStyle({}, { maxHeight: 300 })).style.maxHeight).toBe("300px");
+
+    const fullscreen = await frameStyle({ displayMode: "fullscreen", containerDimensions: { maxHeight: 480 } });
+    expect(fullscreen.style.maxHeight).toBe("");
+    expect(fullscreen.style.overflowY).toBe("");
   });
 });

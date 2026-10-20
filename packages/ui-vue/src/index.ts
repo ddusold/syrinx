@@ -311,6 +311,33 @@ export const Embed = defineComponent({
 });
 
 /**
+ * Caps the view's height and scrolls inside it, for views drawn in a host frame. An MCP Apps host sizes the frame to the
+ * view's content, so an uncapped long view fills the chat; and `min-height: 100vh` on the content makes it worse, since
+ * the viewport is the frame and the view can only grow. The cap is the host's `containerDimensions.maxHeight` when it
+ * sends one, else `maxHeight` (default 640px). In `fullscreen` (a page, or the host's fullscreen mode) there is no cap.
+ */
+export const ViewFrame = defineComponent({
+  name: "ViewFrame",
+  props: { maxHeight: { type: Number, default: 640 } },
+  setup(props, { slots }) {
+    const view = useView();
+    return () => {
+      const host = view.value.host;
+      const cap =
+        host.displayMode === "fullscreen" ? undefined : (host.containerDimensions?.maxHeight ?? props.maxHeight);
+      return h(
+        "div",
+        {
+          class: "syrinx-frame",
+          style: cap ? { maxHeight: `${cap}px`, overflowY: "auto", overscrollBehavior: "contain" } : undefined,
+        },
+        slots.default?.(),
+      );
+    };
+  },
+});
+
+/**
  * One named part of a composite view. Every part shows normally; when a tool binding selects a part with
  * `component`, only that part renders.
  */

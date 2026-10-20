@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { APPS_PROTOCOL_VERSION, applyHostStyles, createAppsChannel, type AppsChannel } from "./apps-channel.js";
+import {
+  APPS_PROTOCOL_VERSION,
+  applyHostStyles,
+  createAppsChannel,
+  findViewportHeightRules,
+  type AppsChannel,
+} from "./apps-channel.js";
 import { createMcpBridge } from "./mcp.js";
 
 interface Sent {
@@ -260,5 +266,32 @@ describe("MCP bridge", () => {
     const pending = bridge.call("send", {}, { app: "invoices", operation: "send" });
     deliver({ jsonrpc: "2.0", id: sent[0]?.id, error: { code: -32603, message: "host exploded" } });
     await expect(pending).resolves.toMatchObject({ error: { kind: "host", message: "host exploded" } });
+  });
+});
+
+describe("viewport height rules", () => {
+  const sheet = (...rules: [string, string][]) => ({
+    cssRules: rules.map(([selectorText, body]) => ({ selectorText, cssText: `${selectorText} { ${body} }` })),
+  });
+
+  it("finds height and min-height in viewport units, and nothing else", () => {
+    const found = findViewportHeightRules([
+      sheet(
+        [".profile", "min-height: 100vh; background: red;"],
+        [".tall", "height: 80dvh"],
+        [".small", "min-height: 36px"],
+      ),
+      sheet([".fit", "max-height: 100vh"], [".lines", "line-height: 1.5"], [".svh", "margin: 0; height:100svh;"]),
+    ]);
+    expect(found).toEqual([".profile", ".tall", ".svh"]);
+  });
+
+  it("skips sheets it cannot read", () => {
+    const blocked = {
+      get cssRules(): never {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    };
+    expect(findViewportHeightRules([blocked, sheet([".a", "height: 100vh"])])).toEqual([".a"]);
   });
 });

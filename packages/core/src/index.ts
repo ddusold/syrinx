@@ -30,6 +30,8 @@ export type { ContentBlock, PromptContent, PromptMessage, RenderedPrompt } from 
 export { lintApp } from "./lint.js";
 export type { LintWarning } from "./lint.js";
 export { anonymous, noopLogger, noopTracer, surfaces } from "./context.js";
+export { anonymousInDev } from "./dev.js";
+export type { AnonymousInDevOptions } from "./dev.js";
 export type { Attributes, Context, Logger, Principal, Span, Surface, Tenant, TraceContext, Tracer } from "./context.js";
 export type { Secret } from "./crypto.js";
 export { toJsonSchema } from "./schema.js";

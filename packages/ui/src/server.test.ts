@@ -1,10 +1,17 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineApp, op, view, type ViewBoot } from "@syrinx/core";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { loadViewShells, renderShell, serveViewAssets, type ViewManifest } from "./server.js";
+import {
+  loadViewShells,
+  renderShell,
+  serveGallery,
+  serveViewAssets,
+  watchViewShells,
+  type ViewManifest,
+} from "./server.js";
 
 const app = defineApp({
   name: "invoices",
@@ -86,5 +93,52 @@ describe("view shells", () => {
   it("fails clearly for views without a bundle", async () => {
     const shells = await loadViewShells({ dir });
     expect(() => shells.render({ ...app.views.card, name: "missing" }, boot)).toThrow(/no bundle; rebuild/);
+  });
+});
+
+describe("development serving", () => {
+  const writeBuild = async (target: string, name: string, code: string) => {
+    await mkdir(join(target, "assets"), { recursive: true });
+    await writeFile(join(target, `assets/${name}.js`), code);
+    const manifest: ViewManifest = { version: 1, views: { "invoices/card": { js: `assets/${name}.js`, css: [] } } };
+    await writeFile(join(target, "manifest.json"), JSON.stringify(manifest));
+  };
+  const card = app.views.card;
+
+  it("picks up a rebuild on the next render, serves its new files, and survives a missing manifest", async () => {
+    const target = await mkdtemp(join(tmpdir(), "syrinx-watch-"));
+    await writeBuild(target, "card-v1", "console.log('one')");
+    const shells = await watchViewShells({ dir: target });
+    expect((await shells.render(card, boot)).html).toContain("console.log('one')");
+
+    // A rebuild swaps directories: for a moment there is no manifest.
+    await rm(join(target, "manifest.json"));
+    expect((await shells.render(card, boot)).html).toContain("console.log('one')");
+
+    await writeBuild(target, "card-v2", "console.log('two')");
+    expect((await shells.render(card, boot)).html).toContain("console.log('two')");
+    expect([...shells.files.keys()]).toEqual(["assets/card-v2.js"]);
+    const serve = serveViewAssets(shells);
+    expect(await serve(new Request("https://x.test/views/assets/card-v2.js"))?.text()).toBe("console.log('two')");
+  });
+
+  it("serves the gallery from disk, and only the gallery", async () => {
+    const target = await mkdtemp(join(tmpdir(), "syrinx-gallery-"));
+    await mkdir(join(target, "gallery"));
+    await writeFile(join(target, "gallery.html"), "<h1>Gallery</h1>");
+    await writeFile(join(target, "gallery/invoices-card-0.html"), "<p>Preview</p>");
+    await writeFile(join(target, "manifest.json"), "{}");
+    const serve = serveGallery(target);
+    const get = (path: string, method = "GET") => serve(new Request(`https://x.test${path}`, { method }));
+
+    expect(await (await get("/__gallery/"))?.text()).toBe("<h1>Gallery</h1>");
+    expect(await (await get("/__gallery/gallery.html"))?.text()).toBe("<h1>Gallery</h1>");
+    const page = await get("/__gallery/gallery/invoices-card-0.html");
+    expect(page?.headers.get("content-type")).toContain("text/html");
+    expect(page?.headers.get("cache-control")).toBe("no-store");
+    expect((await get("/__gallery/manifest.json"))?.status).toBe(404);
+    expect((await get("/__gallery/gallery/../manifest.json"))?.status).toBe(404);
+    expect(await get("/elsewhere")).toBeUndefined();
+    expect(await get("/__gallery/", "POST")).toBeUndefined();
   });
 });

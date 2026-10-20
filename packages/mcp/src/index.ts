@@ -50,7 +50,8 @@ export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {
   basePath?: string;
   /**
    * Hostnames the Host header may name (DNS rebinding protection). Defaults to localhost only, so a deployed server
-   * must list its public hostnames. Pass false to skip the check, for example behind a proxy that enforces it.
+   * must list its public hostnames; the `SYRINX_ALLOWED_HOSTS` environment variable (comma-separated) adds some
+   * without a code change, such as a tunnel's. Pass false to skip the check, for example behind a proxy that enforces it.
    */
   allowedHosts?: string[] | false;
   /** Hostnames browsers may call from (the Origin header). Requests without Origin pass. Defaults to localhost. */
@@ -109,6 +110,19 @@ const methodNotFound = (id: string | number | null, method: string) =>
 
 /** Bodies smaller than this are sent as they are: compressing them saves less than it costs. */
 const COMPRESS_MIN_BYTES = 1024;
+
+/**
+ * Public hostnames from `SYRINX_ALLOWED_HOSTS` (comma-separated), on top of localhost, so a tunnel or preview host can
+ * be allowed without a code change. An explicit `allowedHosts` option wins over it.
+ */
+function hostsFromEnv(): string[] | undefined {
+  const raw = typeof process === "undefined" ? undefined : process.env.SYRINX_ALLOWED_HOSTS;
+  const extra = raw
+    ?.split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+  return extra?.length ? [...localhostAllowedHostnames(), ...extra] : undefined;
+}
 
 /**
  * Gzips a complete JSON response when the client accepts gzip. Every exchange is one JSON response (no streams), so
@@ -190,7 +204,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
       const listen = await listenRequestId(request);
       if (listen !== undefined) return methodNotFound(listen, "subscriptions/listen");
 
-      const hosts = options.allowedHosts ?? localhostAllowedHostnames();
+      const hosts = options.allowedHosts ?? hostsFromEnv() ?? localhostAllowedHostnames();
       if (hosts !== false) {
         // Fetch-style callers may omit Host; servers build the URL from it, so the URL's host stands in.
         const host = validateHostHeader(request.headers.get("host") ?? new URL(request.url).host, hosts);

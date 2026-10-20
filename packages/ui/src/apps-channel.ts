@@ -77,6 +77,8 @@ export interface AppsChannel {
   close(): void;
 }
 
+let viewportWarned = false;
+
 export function createAppsChannel(options: AppsChannelOptions = {}): AppsChannel {
   const host = options.host ?? window.parent;
   const timeoutMs = options.timeoutMs ?? 300_000;
@@ -151,6 +153,15 @@ export function createAppsChannel(options: AppsChannelOptions = {}): AppsChannel
       handlers.set(method, handler);
     },
     reportSize() {
+      if (typeof document !== "undefined" && !viewportWarned) {
+        viewportWarned = true;
+        const rules = findViewportHeightRules(document.styleSheets);
+        if (rules.length) {
+          console.warn(
+            `[syrinx] ${rules.slice(0, 3).join(", ")} size by viewport height (vh). The host sizes this frame to the view, so such a view can only grow; size by content, or wrap it in ViewFrame.`,
+          );
+        }
+      }
       // Measured as ext-apps does: the content's natural height, and the viewport's width.
       let scheduled = false;
       let last = { width: 0, height: 0 };
@@ -187,6 +198,34 @@ export function createAppsChannel(options: AppsChannelOptions = {}): AppsChannel
       pending.clear();
     },
   };
+}
+
+/** The parts of a stylesheet {@link findViewportHeightRules} reads; real `CSSStyleSheet`s fit. */
+export interface SheetLike {
+  cssRules: ArrayLike<{ cssText?: string; selectorText?: string }>;
+}
+
+/**
+ * Selectors whose `height` or `min-height` is in viewport units (`100vh`, `100dvh`, ...). In an MCP Apps host the frame
+ * is sized to the view, so the viewport is the view's own previous height: such a rule can only ever grow it. Unreadable
+ * (cross-origin) sheets are skipped. Returns the selectors, for a warning.
+ */
+export function findViewportHeightRules(sheets: ArrayLike<SheetLike>): string[] {
+  const found: string[] = [];
+  for (const sheet of Array.from(sheets)) {
+    let rules: ArrayLike<{ cssText?: string; selectorText?: string }>;
+    try {
+      rules = sheet.cssRules;
+    } catch {
+      continue;
+    }
+    for (const rule of Array.from(rules)) {
+      if (rule.selectorText && /(?:^|[;{\s])(?:min-)?height\s*:[^;}]*\d(?:[sld]?vh)\b/i.test(rule.cssText ?? "")) {
+        found.push(rule.selectorText);
+      }
+    }
+  }
+  return found;
 }
 
 /**

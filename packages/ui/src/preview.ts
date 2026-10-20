@@ -7,7 +7,11 @@ import { ViewCallError, type BridgeResult, type HostBridge, type HostContext } f
  */
 export function createPreviewBridge(boot: ViewBoot): HostBridge {
   const resultListeners: ((result: BridgeResult) => void)[] = [];
-  const dark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
+  // The gallery's theme toggle sets ?theme=light|dark on the preview page; otherwise the system theme applies.
+  const forced = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("theme");
+  const dark =
+    forced === "dark" ||
+    (forced !== "light" && typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches);
   const host: HostContext = { theme: dark ? "dark" : "light", displayMode: "inline", platform: "web" };
   return {
     async connect() {

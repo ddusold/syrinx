@@ -11,7 +11,7 @@ import {
   type Principal,
   type Tracer,
 } from "@syrinx/core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ASKS_META_KEY, createMcpSurface, ERROR_META_KEY, type McpOptions } from "./index.js";
 
@@ -394,6 +394,23 @@ describe("endpoints and protection", () => {
       surface.fetch(new Request("http://localhost/mcp", { method: "POST", headers, body: "{}" }));
     expect((await post({ host: "evil.example" })).status).toBe(403);
     expect((await post({ origin: "https://evil.example" })).status).toBe(403);
+  });
+
+  it("adds hosts from SYRINX_ALLOWED_HOSTS to localhost, and lets an explicit option win", async () => {
+    const post = (s: typeof surface, host: string) =>
+      s.fetch(new Request("http://localhost/mcp", { method: "POST", headers: { host }, body: "{}" }));
+    vi.stubEnv("SYRINX_ALLOWED_HOSTS", "tunnel.example, preview.example");
+    try {
+      const fromEnv = createMcpSurface(surfaceOptions);
+      expect((await post(fromEnv, "tunnel.example")).status).not.toBe(403);
+      expect((await post(fromEnv, "preview.example")).status).not.toBe(403);
+      expect((await post(fromEnv, "localhost")).status).not.toBe(403);
+      expect((await post(fromEnv, "evil.example")).status).toBe(403);
+      const explicit = createMcpSurface({ ...surfaceOptions, allowedHosts: ["only.example"] });
+      expect((await post(explicit, "tunnel.example")).status).toBe(403);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("challenges anonymous callers when auth is required", async () => {
