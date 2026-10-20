@@ -63,6 +63,20 @@ describe("buildViews", () => {
     expect(off.warnings).toEqual([]);
   });
 
+  it("leaves the caller's NODE_ENV alone, as Vite's build would set it to production", async () => {
+    const { root, app } = await fixture();
+    vi.stubEnv("NODE_ENV", undefined);
+    try {
+      await buildViews({ apps: [app], root, outDir: "dist/views", vite, gallery: false });
+      expect(process.env.NODE_ENV).toBeUndefined();
+      vi.stubEnv("NODE_ENV", "development");
+      await buildViews({ apps: [app], root, outDir: "dist/views", vite, gallery: false });
+      expect(process.env.NODE_ENV).toBe("development");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("replaces the output only when a build succeeds, so a broken edit leaves the last good views", async () => {
     const { root, entry, app } = await fixture();
     await buildViews({ apps: [app], root, outDir: "dist/views", vite });

@@ -115,6 +115,20 @@ function entryPlugin(views: Map<string, View>, root: string, adapters: readonly 
   };
 }
 
+/**
+ * Vite's `build` sets `process.env.NODE_ENV` to `production` when it is unset. That would leak into a server that builds
+ * its views in-process (`watchViews`): it would think it runs in production. Puts the caller's value back.
+ */
+async function buildKeepingEnv(config: InlineConfig) {
+  const before = process.env.NODE_ENV;
+  try {
+    return await build(config);
+  } finally {
+    if (before === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = before;
+  }
+}
+
 const outputs = (result: Awaited<ReturnType<typeof build>>): Rollup.RollupOutput[] =>
   Array.isArray(result) ? result : "output" in result ? [result] : [];
 
@@ -231,7 +245,7 @@ export async function buildViews(options: BuildViewsOptions): Promise<BuiltViews
           },
         },
       };
-      const result = await build(options.vite ? mergeConfig(config, options.vite) : config);
+      const result = await buildKeepingEnv(options.vite ? mergeConfig(config, options.vite) : config);
       const files = outputs(result).flatMap((o) => o.output);
       const entry = files.find((f): f is Rollup.OutputChunk => f.type === "chunk" && f.isEntry);
       if (!entry) throw new Error(`Building view ${id} produced no script.`);
