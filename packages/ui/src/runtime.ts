@@ -63,7 +63,12 @@ function applyTheme(host: HostContext) {
  */
 export async function startView(options: StartOptions): Promise<StartedView> {
   const boot = options.boot ?? readBoot();
-  const bridge = options.bridge ?? (boot.channel === "preview" ? createPreviewBridge(boot) : createMcpBridge());
+  if (!options.bridge && boot.channel === "rest") {
+    throw new Error("A view booted for the rest channel needs a bridge: pass one made with createRestBridge.");
+  }
+  const bridge =
+    options.bridge ??
+    (boot.channel === "preview" ? createPreviewBridge(boot) : createMcpBridge({}, { hostStyles: boot.hostStyles }));
   const root = options.views[boot.view];
   if (!root) throw new Error(`The bundle has no module for view ${boot.view}.`);
   // The root renders prompts for itself and everything embedded in it, so its calls can ask inside the view.
@@ -81,6 +86,8 @@ export async function startView(options: StartOptions): Promise<StartedView> {
     host: {},
   };
   let mounted: MountedView | undefined;
+  // The input of the call that produced `state.data`, for `refresh`; unset when the host opened the view and did not say.
+  let sourceInput: { value: unknown } | undefined;
 
   const apply = (result: BridgeResult) => {
     if (result.error) {
@@ -146,7 +153,10 @@ export async function startView(options: StartOptions): Promise<StartedView> {
         result = await bridge.call(route.tool, input, { app, operation, resume, ...viewCall });
       }
       if (result.error) throw result.error;
-      if (result.view?.view === boot.view) apply(result);
+      if (result.view?.view === boot.view) {
+        apply(result);
+        sourceInput = { value: input };
+      }
       return result.data as T;
     },
     openLink: (url) => bridge.openLink(url),
@@ -160,23 +170,41 @@ export async function startView(options: StartOptions): Promise<StartedView> {
       features: boot.features[view] ?? {},
       host: state.host,
       emit: emitFor(appOf(view)),
+      refresh: () => refresh(),
       contexts,
       runtime,
     }),
   };
 
   const rootEmit = emitFor(appOf(boot.view));
+  const refresh = async () => {
+    const source = state.source;
+    if (!source)
+      throw new ViewCallError("unreachable", "Nothing to refresh: no operation has produced this view's data.");
+    if (!sourceInput) {
+      throw new ViewCallError(
+        "unreachable",
+        `The input of ${source.op} is not known where this view runs, so it cannot be repeated.`,
+      );
+    }
+    await rootEmit.call(source.op, sourceInput.value);
+  };
   const rootProps = (contexts: ContextScope = emptyScope): ViewProps => ({
     ...state,
     view: boot.view,
     features: boot.features[boot.view] ?? {},
     emit: rootEmit,
+    refresh,
     contexts,
     runtime,
   });
 
   // Listen before connecting: hosts may deliver the opening result as soon as the handshake ends.
-  bridge.onResult(apply);
+  bridge.onResult((result) => {
+    // The host opened the view (or pushed new data): what it reports as the call's arguments is the refresh input.
+    if (result.view?.view === boot.view && bridge.toolInput) sourceInput = { value: bridge.toolInput() };
+    apply(result);
+  });
   bridge.onHostContext((host) => {
     state.host = host;
     applyTheme(host);

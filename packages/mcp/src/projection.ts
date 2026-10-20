@@ -360,6 +360,7 @@ async function viewBoot(registry: Registry, root: View, scope: Scope): Promise<V
     operations: {},
     features: {},
     viewCallTool: VIEW_CALL_TOOL,
+    ...(root.hostStyles ? { hostStyles: root.hostStyles } : {}),
   };
   const inScope = new Set(appsIn(registry, scope).map((a) => a.name));
   for (const v of viewClosure(root)) {

@@ -264,6 +264,68 @@ describe("startView", () => {
     expect(seen).toEqual(["syrinx_view_call", undefined, undefined]);
   });
 
+  it("refreshes by repeating the bound operation that produced the data, keeping its component", async () => {
+    const { bridge, calls } = fakeBridge({
+      invoices_list: {
+        data: { items: [2] },
+        view: { view: "invoices/browser", op: "list", component: "table", schemaVersion: "v1" },
+      },
+    });
+    const root = recorder();
+    const started = await startView({
+      views: { "invoices/browser": root.module },
+      boot,
+      bridge,
+      element: document.body,
+    });
+
+    await expect(started.props().refresh()).rejects.toMatchObject({ kind: "unreachable" });
+    await started.props().emit.call("list", { status: "open" });
+    calls.length = 0;
+    await root.last()?.refresh();
+    expect(calls).toEqual([{ tool: "invoices_list", input: { status: "open" } }]);
+    expect(root.last()).toMatchObject({ data: { items: [2] }, component: "table" });
+
+    // An embedded view refreshes the root's data, not a call of its own.
+    const child = started.props().runtime.childProps("customers/badge", { name: "Acme" }, emptyScope);
+    calls.length = 0;
+    await child.refresh();
+    expect(calls).toEqual([{ tool: "invoices_list", input: { status: "open" } }]);
+  });
+
+  it("refreshes a host-opened view with the arguments the host reported, and says so when it did not", async () => {
+    const opened = { data: { items: [] }, view: { view: "invoices/browser", op: "list", schemaVersion: "v1" } };
+    const withInput = fakeBridge();
+    withInput.bridge.toolInput = () => ({ status: "paid" });
+    const root = recorder();
+    await startView({
+      views: { "invoices/browser": root.module },
+      boot,
+      bridge: withInput.bridge,
+      element: document.body,
+    });
+    withInput.push(opened);
+    await root.last()?.refresh();
+    expect(withInput.calls).toEqual([{ tool: "invoices_list", input: { status: "paid" } }]);
+
+    const silent = fakeBridge();
+    const quiet = recorder();
+    await startView({
+      views: { "invoices/browser": quiet.module },
+      boot,
+      bridge: silent.bridge,
+      element: document.body,
+    });
+    silent.push(opened);
+    await expect(quiet.last()?.refresh()).rejects.toThrow(/input of list is not known/);
+  });
+
+  it("needs a bridge for the rest channel, and takes the host's styles unless the boot says otherwise", async () => {
+    await expect(
+      startView({ views: { "invoices/browser": recorder().module }, boot: { ...boot, channel: "rest" } }),
+    ).rejects.toThrow(/createRestBridge/);
+  });
+
   it("fails clearly when the bundle lacks the root view", async () => {
     await expect(startView({ views: {}, boot, bridge: fakeBridge().bridge })).rejects.toThrow(/no module/);
   });

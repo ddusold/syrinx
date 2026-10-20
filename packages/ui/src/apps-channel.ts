@@ -5,6 +5,8 @@
  * tests run every bundle against the real ext-apps host (`AppBridge`), so a drift from the protocol fails CI.
  */
 
+import type { HostStylesMode } from "@syrinx/core";
+
 /** The MCP Apps protocol revision this channel speaks (ext-apps `LATEST_PROTOCOL_VERSION`). */
 export const APPS_PROTOCOL_VERSION = "2026-01-26";
 
@@ -187,10 +189,20 @@ export function createAppsChannel(options: AppsChannelOptions = {}): AppsChannel
   };
 }
 
-/** Applies the host's CSS variables and font faces, as MCP Apps hosts send them in the host context. */
-export function applyHostStyles(context: AppsHostContext, root: HTMLElement = document.documentElement): void {
-  for (const [name, value] of Object.entries(context.styles?.variables ?? {})) {
-    if (value !== undefined) root.style.setProperty(name, value);
+/**
+ * Applies the host's CSS variables and font faces, as MCP Apps hosts send them in the host context. `mode` is the
+ * view's `hostStyles`: `fonts` skips the variables, `ignore` skips both.
+ */
+export function applyHostStyles(
+  context: AppsHostContext,
+  root: HTMLElement = document.documentElement,
+  mode: HostStylesMode = "apply",
+): void {
+  if (mode === "ignore") return;
+  if (mode === "apply") {
+    for (const [name, value] of Object.entries(context.styles?.variables ?? {})) {
+      if (value !== undefined) root.style.setProperty(name, value);
+    }
   }
   const fonts = context.styles?.css?.fonts;
   if (fonts && !document.getElementById("__mcp-host-fonts")) {

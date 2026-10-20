@@ -62,6 +62,13 @@ export interface ViewProps<Data = unknown> {
   /** A question a call is waiting on. Framework bindings render a default dialog for it. */
   readonly prompt?: InputPrompt;
   readonly emit: ViewEmit;
+  /**
+   * Runs the operation that produced `data` again, with the same input, and replaces `data` with its result. Use it
+   * after a change instead of calling the operation by name, which would swap a component-bound slice for another
+   * operation's view. Rejects with a {@link ViewCallError} when no operation produced the data yet, or its input is
+   * not known where the view runs (the gallery preview).
+   */
+  refresh(): Promise<void>;
   /** View context providers above this view, so a child built with another framework can bind to them. */
   readonly contexts: ContextScope;
   /** Builds and mounts embedded views. */
@@ -123,6 +130,11 @@ export interface HostBridge {
   onHostContext(listener: (host: HostContext) => void): void;
   /** Results the host pushes, such as the tool result that opened the view. */
   onResult(listener: (result: BridgeResult) => void): void;
+  /**
+   * The arguments of the call that opened the view, when the host reports them (MCP Apps sends them in
+   * `ui/notifications/tool-input`). What `ViewProps.refresh` re-runs the opening operation with.
+   */
+  toolInput?(): unknown;
   call(
     tool: string,
     input: unknown,

@@ -14,6 +14,7 @@ export type {
 } from "./app.js";
 export { bindingComponent, bindingOp, schemaVersion, view, viewClosure, viewId } from "./view.js";
 export type {
+  HostStylesMode,
   View,
   ViewBinding,
   ViewBoot,

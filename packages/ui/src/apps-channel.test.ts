@@ -115,6 +115,23 @@ describe("MCP Apps channel", () => {
     expect(document.documentElement.style.getPropertyValue("--color-text-primary")).toBe("#123456");
     expect(document.querySelectorAll("#__mcp-host-fonts")).toHaveLength(1);
   });
+
+  it("applies only what the view's hostStyles mode allows", () => {
+    const styles = { variables: { "--color-bg": "#010203" }, css: { fonts: "@font-face{font-family:Z}" } };
+    const root = document.createElement("div");
+    document.getElementById("__mcp-host-fonts")?.remove();
+
+    applyHostStyles({ styles }, root, "ignore");
+    expect(root.style.getPropertyValue("--color-bg")).toBe("");
+    expect(document.getElementById("__mcp-host-fonts")).toBeNull();
+
+    applyHostStyles({ styles }, root, "fonts");
+    expect(root.style.getPropertyValue("--color-bg")).toBe("");
+    expect(document.getElementById("__mcp-host-fonts")?.textContent).toContain("font-family:Z");
+
+    applyHostStyles({ styles }, root, "apply");
+    expect(root.style.getPropertyValue("--color-bg")).toBe("#010203");
+  });
 });
 
 describe("MCP bridge", () => {
@@ -142,6 +159,27 @@ describe("MCP bridge", () => {
       ...resume,
     });
     expect(sent.find((m) => m.method === "ui/open-link")?.params).toEqual({ url: "https://example.com" });
+  });
+
+  it("leaves the host's variables alone when the view ignores host styles", async () => {
+    const { host } = fakeHost({
+      "ui/initialize": () => ({
+        hostContext: { theme: "dark", styles: { variables: { "--ignored-by-view": "red" } } },
+      }),
+    });
+    const bridge = createMcpBridge(open(host), { hostStyles: "ignore" });
+    await bridge.connect();
+    expect(document.documentElement.style.getPropertyValue("--ignored-by-view")).toBe("");
+    expect(bridge.host().theme).toBe("dark");
+  });
+
+  it("reports the arguments of the call that opened the view", async () => {
+    const { host, deliver } = fakeHost({ "ui/initialize": () => ({ hostContext: {} }) });
+    const bridge = createMcpBridge(open(host));
+    await bridge.connect();
+    expect(bridge.toolInput?.()).toBeUndefined();
+    deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: { personId: "p1" } } });
+    expect(bridge.toolInput?.()).toEqual({ personId: "p1" });
   });
 
   it("calls through the view channel: questions come back as data, answers go back as arguments", async () => {

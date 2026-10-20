@@ -1,4 +1,4 @@
-import type { FieldIssue, ViewResultMeta } from "@syrinx/core";
+import type { FieldIssue, HostStylesMode, ViewResultMeta } from "@syrinx/core";
 import {
   applyHostStyles,
   createAppsChannel,
@@ -111,30 +111,39 @@ function toHostContext(context: AppsHostContext): HostContext {
  * The bridge for MCP Apps hosts: the host pushes the tool result that opened the view, proxies the view's tool calls
  * to the server, and reports theme and size changes; the view reports its own size so the host can fit the iframe.
  */
-export function createMcpBridge(channel: AppsChannel | AppsChannelOptions = {}): HostBridge {
+export function createMcpBridge(
+  channel: AppsChannel | AppsChannelOptions = {},
+  options: { hostStyles?: HostStylesMode | undefined } = {},
+): HostBridge {
   const apps = "connect" in channel ? channel : createAppsChannel(channel);
+  const hostStyles = options.hostStyles ?? "apply";
   let context: AppsHostContext = {};
+  let toolInput: unknown;
   let channelOpen = true;
   const hostListeners: ((host: HostContext) => void)[] = [];
   const resultListeners: ((result: BridgeResult) => void)[] = [];
 
+  apps.on(METHODS.toolInput, (params) => {
+    toolInput = params.arguments;
+  });
   apps.on(METHODS.toolResult, (result) => {
     const converted = fromToolResult(result);
     for (const listener of resultListeners) listener(converted);
   });
   apps.on(METHODS.hostContextChanged, (changed) => {
     context = { ...context, ...changed };
-    applyHostStyles(context);
+    applyHostStyles(context, undefined, hostStyles);
     for (const listener of hostListeners) listener(toHostContext(context));
   });
 
   return {
     async connect() {
       context = await apps.connect();
-      applyHostStyles(context);
+      applyHostStyles(context, undefined, hostStyles);
       apps.reportSize();
     },
     host: () => toHostContext(context),
+    toolInput: () => toolInput,
     onHostContext: (listener) => void hostListeners.push(listener),
     onResult: (listener) => void resultListeners.push(listener),
     async call(tool, input, { app, operation, resume, viewCall }) {

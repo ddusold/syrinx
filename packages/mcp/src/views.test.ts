@@ -89,6 +89,7 @@ const invoices = defineApp({
       calls: ["send", "select"],
       embeds: [customers.views.badge],
       features: { actions: true },
+      hostStyles: "ignore",
       prefersBorder: true,
     }),
   },
@@ -187,6 +188,7 @@ describe("views over MCP", () => {
     expect(single).toMatchObject({
       view: "invoices/browser",
       channel: "mcp",
+      hostStyles: "ignore",
       features: { "invoices/browser": { actions: true }, "customers/badge": {} },
     });
     expect(all?.operations["customers.get"]).toEqual({ tool: "customers_get" });

@@ -16,6 +16,13 @@ export interface ViewCsp {
   frameDomains?: readonly string[];
 }
 
+/**
+ * How a view treats the styling an MCP Apps host sends (its CSS variables and font faces). `apply` takes both, the
+ * default. `fonts` loads the host's font faces but not its variables. `ignore` takes neither, for views with their own
+ * brand that must not take on the host's look.
+ */
+export type HostStylesMode = "apply" | "fonts" | "ignore";
+
 /** An operation whose results render a view, optionally showing only one named part of a composite view. */
 export type ViewBinding<Op extends string = string> = Op | { op: Op; component: string };
 
@@ -49,6 +56,8 @@ export interface ViewDefinition<Bound extends string = string, Calls extends str
   /** Flags the view reads to turn behavior on or off, such as `{ actions: true }`. */
   readonly features?: Readonly<Record<string, boolean>>;
   readonly csp?: ViewCsp;
+  /** How the view treats the host's styling; defaults to `apply`. */
+  readonly hostStyles?: HostStylesMode;
   /** Asks hosts to draw a border around the view. */
   readonly prefersBorder?: boolean;
   readonly examples?: readonly ViewExample[];
@@ -127,8 +136,13 @@ export interface ViewOperationRoute {
 export interface ViewBoot {
   /** The root view, `app/view`. */
   view: string;
-  /** `mcp` inside an MCP Apps host; `preview` in the gallery, with sample data and no server. */
-  channel: "mcp" | "preview";
+  /**
+   * `mcp` inside an MCP Apps host; `preview` in the gallery, with sample data and no server; `rest` in a web page
+   * that calls the REST surface, which supplies its own bridge (`createRestBridge` in `@syrinx/ui`).
+   */
+  channel: "mcp" | "preview" | "rest";
+  /** How the view treats the host's styling (see {@link HostStylesMode}); absent means `apply`. */
+  hostStyles?: HostStylesMode;
   /** Routes keyed `app.operation`, for every operation the view and its embeds call or are bound to. Operations missing here cannot be reached from where the view is served. */
   operations: Record<string, ViewOperationRoute>;
   /** Feature flags keyed `app/view`. */
