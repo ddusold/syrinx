@@ -133,6 +133,11 @@ export interface ViewBoot {
   operations: Record<string, ViewOperationRoute>;
   /** Feature flags keyed `app/view`. */
   features: Record<string, Readonly<Record<string, boolean>>>;
+  /**
+   * The tool views call operations through, so questions come back to the view instead of to the host. Absent in
+   * the preview, and when the endpoint serves no such tool.
+   */
+  viewCallTool?: string;
   /** Preview channel only: the data and part to show. */
   preview?: { data: unknown; op?: string; component?: string };
 }

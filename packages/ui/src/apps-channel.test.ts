@@ -141,47 +141,76 @@ describe("MCP bridge", () => {
     expect(sent.find((m) => m.method === "ui/open-link")?.params).toEqual({ url: "https://example.com" });
   });
 
-  it("asks inline through _meta: marks the call, reads questions from the result, sends answers back", async () => {
+  it("calls through the view channel: questions come back as data, answers go back as arguments", async () => {
     const { host, sent } = fakeHost({
-      "tools/call": (params) =>
-        (params._meta as Record<string, unknown>)["io.github.ddusold.syrinx/resume"]
-          ? { structuredContent: { voided: true } }
+      "tools/call": (params) => {
+        const args = params.arguments as { resume?: unknown };
+        const envelope = args.resume
+          ? {
+              resultType: "complete",
+              data: { voided: true },
+              view: { view: "invoices/browser", op: "void", schemaVersion: "v" },
+            }
           : {
-              isError: true,
-              content: [{ type: "text", text: "Waiting for the user to answer in the view." }],
-              _meta: {
-                "io.github.ddusold.syrinx/input": {
-                  inputRequests: {
-                    c: { method: "elicitation/create", params: { message: "Void?", requestedSchema: {} } },
-                  },
-                  requestState: "sealed",
-                },
-              },
-            },
+              resultType: "input_required",
+              inputRequests: { c: { method: "elicitation/create", params: { message: "Void?", requestedSchema: {} } } },
+              requestState: "sealed",
+            };
+        return { content: [{ type: "text", text: JSON.stringify(envelope) }], structuredContent: envelope };
+      },
     });
     const bridge = createMcpBridge(open(host));
-    const target = { app: "invoices", operation: "void", inline: true };
+    const target = { app: "invoices", operation: "void", viewCall: "syrinx_view_call" };
     await expect(bridge.call("void", { id: "inv_1" }, target)).resolves.toEqual({
       input: { requests: { c: { message: "Void?", fields: {} } }, requestState: "sealed" },
     });
     const resume = { inputResponses: { c: { action: "accept" as const } }, requestState: "sealed" };
     await expect(bridge.call("void", { id: "inv_1" }, { ...target, resume })).resolves.toEqual({
       data: { voided: true },
+      view: { view: "invoices/browser", op: "void", schemaVersion: "v" },
     });
-    const [first, second] = sent.filter((m) => m.method === "tools/call").map((m) => m.params);
-    expect(first?._meta).toEqual({
-      "io.github.ddusold.syrinx/surface": "app",
-      "io.github.ddusold.syrinx/asksInline": true,
-    });
-    expect(second).toEqual({
-      name: "void",
-      arguments: { id: "inv_1" },
-      _meta: {
-        "io.github.ddusold.syrinx/surface": "app",
-        "io.github.ddusold.syrinx/asksInline": true,
-        "io.github.ddusold.syrinx/resume": resume,
+    const calls = sent.filter((m) => m.method === "tools/call").map((m) => m.params);
+    expect(calls).toEqual([
+      {
+        name: "syrinx_view_call",
+        arguments: { app: "invoices", operation: "void", input: { id: "inv_1" } },
+        _meta: { "io.github.ddusold.syrinx/surface": "app" },
       },
+      {
+        name: "syrinx_view_call",
+        arguments: { app: "invoices", operation: "void", input: { id: "inv_1" }, resume },
+        _meta: { "io.github.ddusold.syrinx/surface": "app" },
+      },
+    ]);
+  });
+
+  it("reads the channel's JSON text when a host drops structuredContent", async () => {
+    const envelope = { resultType: "error", error: { kind: "forbidden", message: "no" } };
+    const { host } = fakeHost({
+      "tools/call": () => ({ isError: true, content: [{ type: "text", text: JSON.stringify(envelope) }] }),
     });
+    const bridge = createMcpBridge(open(host));
+    await expect(
+      bridge.call("send", {}, { app: "invoices", operation: "send", viewCall: "syrinx_view_call" }),
+    ).resolves.toMatchObject({ error: { kind: "forbidden", message: "no" } });
+  });
+
+  it("falls back to calling the operation directly when the server refuses the channel", async () => {
+    const { host, sent } = fakeHost({
+      "tools/call": (params) =>
+        params.name === "syrinx_view_call"
+          ? { isError: true, structuredContent: { resultType: "error", error: { kind: "unavailable", message: "no" } } }
+          : { structuredContent: { id: "inv_1" } },
+    });
+    const bridge = createMcpBridge(open(host));
+    const target = { app: "invoices", operation: "send", viewCall: "syrinx_view_call" };
+    await expect(bridge.call("send", { id: "inv_1" }, target)).resolves.toEqual({ data: { id: "inv_1" } });
+    await bridge.call("send", { id: "inv_1" }, target);
+    expect(sent.filter((m) => m.method === "tools/call").map((m) => m.params?.name)).toEqual([
+      "syrinx_view_call",
+      "send",
+      "send", // the channel is not tried again
+    ]);
   });
 
   it("reports host failures as view errors", async () => {

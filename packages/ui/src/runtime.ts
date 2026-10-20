@@ -66,8 +66,8 @@ export async function startView(options: StartOptions): Promise<StartedView> {
   const bridge = options.bridge ?? (boot.channel === "preview" ? createPreviewBridge(boot) : createMcpBridge());
   const root = options.views[boot.view];
   if (!root) throw new Error(`The bundle has no module for view ${boot.view}.`);
-  // The root renders prompts for itself and everything embedded in it.
-  const inline = root.handlesPrompts === true;
+  // The root renders prompts for itself and everything embedded in it, so its calls can ask inside the view.
+  const viewCall = root.handlesPrompts === true && boot.viewCallTool ? { viewCall: boot.viewCallTool } : {};
 
   const state: {
     data: unknown;
@@ -139,11 +139,11 @@ export async function startView(options: StartOptions): Promise<StartedView> {
       if (!route) {
         throw new ViewCallError("unreachable", `${app}.${operation} is not served where this view runs.`);
       }
-      let result = await bridge.call(route.tool, input, { app, operation, inline });
+      let result = await bridge.call(route.tool, input, { app, operation, ...viewCall });
       for (let round = 1; result.input; round++) {
         if (round > MAX_ROUNDS) throw new ViewCallError("internal", `${app}.${operation} kept asking for input.`);
         const resume = await answerAll(result.input);
-        result = await bridge.call(route.tool, input, { app, operation, resume, inline });
+        result = await bridge.call(route.tool, input, { app, operation, resume, ...viewCall });
       }
       if (result.error) throw result.error;
       if (result.view?.view === boot.view) apply(result);

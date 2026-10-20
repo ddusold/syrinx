@@ -65,6 +65,16 @@ test("declining in the view leaves the invoice a draft and says why", async ({ p
   await expect(view.locator(".detail .status")).toHaveText("draft");
 });
 
+test("a host that does not declare MCP Apps is asked itself, as before", async ({ page }) => {
+  const view = await open(page, { apps: "0" });
+  await view.locator("button.row[data-id=inv_1]").click();
+  await view.getByRole("button", { name: "Send invoice" }).click();
+  // The server refuses the view channel, the view calls send directly, and this host declines the question.
+  await expect(view.locator(".detail [role=alert]")).toContainText(/declined/i);
+  expect(await page.evaluate(() => window.host.elicited)).toEqual(["Send invoice inv_1 for $1200.00 to Acme Corp?"]);
+  await expect(view.getByRole("dialog")).toHaveCount(0);
+});
+
 test("a component binding renders only the detail part", async ({ page }) => {
   const view = await open(page, { tool: "get", args: JSON.stringify({ id: "inv_1" }) });
   await expect(view.locator(".detail h2")).toHaveText("inv_1");

@@ -2,7 +2,7 @@ export { createContextStore, defineViewContext, emptyScope } from "./context.js"
 export type { ContextScope, ContextStore, ViewContextDef } from "./context.js";
 export { APPS_PROTOCOL_VERSION, AppsProtocolError, createAppsChannel } from "./apps-channel.js";
 export type { AppsChannel, AppsChannelOptions, AppsHostContext } from "./apps-channel.js";
-export { createMcpBridge, fromToolResult } from "./mcp.js";
+export { createMcpBridge, fromToolResult, fromViewCall } from "./mcp.js";
 export type { ToolResultLike } from "./mcp.js";
 export { createPreviewBridge } from "./preview.js";
 export { BOOT_ELEMENT_ID, readBoot, ROOT_ELEMENT_ID, startView } from "./runtime.js";

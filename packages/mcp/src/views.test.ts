@@ -4,10 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   createMcpSurface,
-  ASKS_INLINE_META_KEY,
-  INPUT_META_KEY,
-  RESUME_META_KEY,
   SURFACE_META_KEY,
+  VIEW_CALL_TOOL,
   VIEW_META_KEY,
   VIEW_MIME_TYPE,
   type McpOptions,
@@ -119,9 +117,18 @@ const { views: _views, ...withoutViews } = options;
 const bare = createMcpSurface(withoutViews);
 
 const clients: Client[] = [];
-async function connect(path = "/mcp", target = surface, era: "legacy" | "auto" = "legacy") {
-  // No elicitation capability: like a host that will not show questions outside a chat turn.
-  const client = new Client({ name: "views-test", version: "0.0.0" }, { versionNegotiation: { mode: era } });
+async function connect(
+  path = "/mcp",
+  target = surface,
+  { era = "legacy", apps = false }: { era?: "legacy" | "auto"; apps?: boolean } = {},
+) {
+  // No elicitation capability: like a host that will not show questions outside a chat turn. `apps` declares MCP
+  // Apps support, as hosts that render views do.
+  const capabilities = apps ? { extensions: { "io.modelcontextprotocol/ui": {} } } : {};
+  const client = new Client(
+    { name: "views-test", version: "0.0.0" },
+    { versionNegotiation: { mode: era }, capabilities: capabilities },
+  );
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`http://localhost${path}`), {
       fetch: (url, init) => target.fetch(new Request(url, init)),
@@ -148,6 +155,7 @@ describe("views over MCP", () => {
       select: { visibility: ["app"] },
       void: undefined,
       purge: { visibility: ["model"] },
+      [VIEW_CALL_TOOL]: { visibility: ["app"] },
     });
   });
 
@@ -258,78 +266,90 @@ describe("views over MCP", () => {
     expect(seen.filter((s) => s.method === "resources/read").map((s) => s.encoding)).toEqual([null, null]);
   });
 
-  describe.each(["legacy", "auto"] as const)("questions for views that ask inline (%s client)", (era) => {
-    const inlineMeta = { [SURFACE_META_KEY]: "app", [ASKS_INLINE_META_KEY]: true };
-    interface Questions {
-      inputRequests: Record<string, { method: string; params: { message: string } }>;
-      requestState: string;
+  describe("the view channel", () => {
+    interface Envelope {
+      resultType: string;
+      data?: unknown;
+      view?: { view: string; op: string };
+      inputRequests?: Record<string, { method: string; params: { message: string } }>;
+      requestState?: string;
+      error?: { kind: string; message: string };
     }
+    const viewCall = async (client: Client, args: Record<string, unknown>) => {
+      const result = await client.callTool({ name: VIEW_CALL_TOOL, arguments: args });
+      return { isError: result.isError === true, ...(result.structuredContent as Envelope) };
+    };
+    const appsClient = () => connect("/mcp/invoices", surface, { era: "auto", apps: true });
 
-    async function ask(client: Client, id = "inv_1") {
-      const first = await client.callTool({ name: "void", arguments: { id }, _meta: inlineMeta });
-      const questions = first._meta?.[INPUT_META_KEY] as Questions | undefined;
-      return { first, questions };
-    }
+    it("returns questions to the view as data and finishes on the answer it sends back", async () => {
+      const client = await appsClient();
+      const asked = await viewCall(client, { app: "invoices", operation: "void", input: { id: "inv_1" } });
+      expect(asked).toMatchObject({ isError: false, resultType: "input_required" });
+      const [key, request] = Object.entries(asked.inputRequests ?? {})[0] ?? [];
+      expect(request).toMatchObject({ method: "elicitation/create", params: { message: "Void invoice inv_1?" } });
 
-    it("returns the question to the view instead of asking the host, and finishes on its answer", async () => {
-      const client = await connect("/mcp/invoices", surface, era);
-      const { first, questions } = await ask(client);
-      expect(first.isError).toBe(true);
-      expect(Object.values(questions?.inputRequests ?? {})).toEqual([
-        {
-          method: "elicitation/create",
-          params: expect.objectContaining({ message: "Void invoice inv_1?" }) as unknown,
-        },
-      ]);
-      const key = Object.keys(questions?.inputRequests ?? {})[0] ?? "";
-      const done = await client.callTool({
-        name: "void",
-        arguments: { id: "inv_1" },
-        _meta: {
-          ...inlineMeta,
-          [RESUME_META_KEY]: {
-            requestState: questions?.requestState,
-            inputResponses: { [key]: { action: "accept", content: {} } },
-          },
+      const done = await viewCall(client, {
+        app: "invoices",
+        operation: "void",
+        input: { id: "inv_1" },
+        resume: {
+          requestState: asked.requestState,
+          inputResponses: { [key ?? ""]: { action: "accept", content: {} } },
         },
       });
-      expect(done.structuredContent).toEqual({ id: "inv_1", voided: true });
+      expect(done).toEqual({ isError: false, resultType: "complete", data: { id: "inv_1", voided: true } });
       expect(audit.filter((r) => r.operation === "void").map((r) => `${r.surface}:${r.outcome}`)).toEqual([
         "app:input_required",
         "app:complete",
       ]);
     });
 
-    it("cancels on decline, and refuses answers bound to other input", async () => {
-      const client = await connect("/mcp/invoices", surface, era);
-      const { questions } = await ask(client);
-      const key = Object.keys(questions?.inputRequests ?? {})[0] ?? "";
+    it("cancels on decline and refuses answers bound to other input", async () => {
+      const client = await appsClient();
+      const asked = await viewCall(client, { app: "invoices", operation: "void", input: { id: "inv_1" } });
+      const key = Object.keys(asked.inputRequests ?? {})[0] ?? "";
       const answer = (action: string, id = "inv_1") =>
-        client.callTool({
-          name: "void",
-          arguments: { id },
-          _meta: {
-            ...inlineMeta,
-            [RESUME_META_KEY]: { requestState: questions?.requestState, inputResponses: { [key]: { action } } },
-          },
+        viewCall(client, {
+          app: "invoices",
+          operation: "void",
+          input: { id },
+          resume: { requestState: asked.requestState, inputResponses: { [key]: { action } } },
         });
-      expect((await answer("decline")).content).toEqual([
-        expect.objectContaining({ text: expect.stringMatching(/^cancelled: Declined/) as unknown }),
-      ]);
-      const forged = await answer("accept", "inv_2");
-      expect(forged.isError).toBe(true);
-      expect(forged.structuredContent).toBeUndefined();
+      expect(await answer("decline")).toMatchObject({ isError: true, error: { kind: "cancelled" } });
+      expect(await answer("accept", "inv_2")).toMatchObject({ isError: true, resultType: "error" });
     });
 
-    it("leaves calls without the mark to the host, which here cannot ask", async () => {
-      const client = await connect("/mcp/invoices", surface, era);
-      const plain = await client.callTool({
-        name: "void",
-        arguments: { id: "inv_1" },
-        _meta: { [SURFACE_META_KEY]: "app" },
+    it("carries view metadata for bound operations and keeps scope and visibility", async () => {
+      const client = await appsClient();
+      expect(await viewCall(client, { app: "invoices", operation: "list" })).toMatchObject({
+        resultType: "complete",
+        view: { view: "invoices/browser", op: "list" },
       });
-      expect(plain._meta?.[INPUT_META_KEY]).toBeUndefined();
-      expect(plain.isError).toBe(true);
+      // customers is not served on /mcp/invoices, and purge is not visible to views.
+      expect(await viewCall(client, { app: "customers", operation: "get", input: { name: "Acme" } })).toMatchObject({
+        error: { kind: "not_found" },
+      });
+      expect(await viewCall(client, { app: "invoices", operation: "purge" })).toMatchObject({
+        error: { kind: "not_found" },
+      });
+    });
+
+    it("refuses clients that do not declare MCP Apps, so a model cannot answer for the user", async () => {
+      for (const client of [
+        await connect("/mcp/invoices", surface, { era: "auto" }),
+        await connect("/mcp/invoices", surface, { era: "legacy", apps: true }),
+      ]) {
+        expect(await viewCall(client, { app: "invoices", operation: "void", input: { id: "inv_1" } })).toMatchObject({
+          isError: true,
+          error: { kind: "unavailable" },
+        });
+      }
+      expect(audit).toEqual([]);
+    });
+
+    it("boots views with the channel's name", async () => {
+      await (await appsClient()).readResource({ uri: "ui://invoices/browser" });
+      expect(rendered[0]?.boot.viewCallTool).toBe(VIEW_CALL_TOOL);
     });
   });
 

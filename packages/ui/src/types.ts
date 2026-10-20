@@ -126,7 +126,13 @@ export interface HostBridge {
   call(
     tool: string,
     input: unknown,
-    options: { app: string; operation: string; resume?: InputResume; inline?: boolean },
+    options: {
+      app: string;
+      operation: string;
+      resume?: InputResume;
+      /** The server's view channel tool: when set, questions come back to the view instead of to the host. */
+      viewCall?: string;
+    },
   ): Promise<BridgeResult>;
   openLink(url: string): Promise<void>;
 }

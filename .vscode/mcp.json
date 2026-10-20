@@ -3,7 +3,8 @@
     "syrinx-invoices": {
       "type": "stdio",
       "command": "pnpm",
-      "args": ["--dir", "examples/invoices", "-s", "stdio"]
+      "args": ["--dir", "examples/invoices", "-s", "stdio"],
+      "env": { "SYRINX_LOG_FILE": "${workspaceFolder}/examples/invoices/dist/mcp.log" }
     },
     "syrinx-invoices-http": {
       "type": "http",

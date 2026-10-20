@@ -16,15 +16,7 @@ import {
   type ViewModule,
   type ViewProps,
 } from "./index.js";
-import {
-  ASKS_INLINE_META_KEY,
-  ERROR_META_KEY,
-  INPUT_META_KEY,
-  META_PREFIX,
-  RESUME_META_KEY,
-  SURFACE_META_KEY,
-  VIEW_META_KEY,
-} from "./mcp.js";
+import { ERROR_META_KEY, META_PREFIX, SURFACE_META_KEY, VIEW_META_KEY } from "./mcp.js";
 
 const selection = defineViewContext<{ selected?: string | undefined; seen: number }, { items: string[] }>({
   name: "selection",
@@ -80,22 +72,11 @@ describe("view context", () => {
 
 describe("tool results", () => {
   it("uses the same _meta keys as @syrinx/mcp", () => {
-    expect([
-      META_PREFIX,
-      ERROR_META_KEY,
-      VIEW_META_KEY,
-      SURFACE_META_KEY,
-      ASKS_INLINE_META_KEY,
-      INPUT_META_KEY,
-      RESUME_META_KEY,
-    ]).toEqual([
+    expect([META_PREFIX, ERROR_META_KEY, VIEW_META_KEY, SURFACE_META_KEY]).toEqual([
       mcp.META_PREFIX,
       mcp.ERROR_META_KEY,
       mcp.VIEW_META_KEY,
       mcp.SURFACE_META_KEY,
-      mcp.ASKS_INLINE_META_KEY,
-      mcp.INPUT_META_KEY,
-      mcp.RESUME_META_KEY,
     ]);
   });
 
@@ -257,20 +238,30 @@ describe("startView", () => {
     ]);
   });
 
-  it("marks calls to ask inline only when the root view renders prompts", async () => {
-    const seen: (boolean | undefined)[] = [];
-    for (const handlesPrompts of [true, false]) {
+  it("routes calls through the view channel only when the root renders prompts and the server has one", async () => {
+    const seen: (string | undefined)[] = [];
+    const cases = [
+      { handlesPrompts: true, viewCallTool: "syrinx_view_call" },
+      { handlesPrompts: false, viewCallTool: "syrinx_view_call" },
+      { handlesPrompts: true, viewCallTool: undefined },
+    ];
+    for (const { handlesPrompts, viewCallTool } of cases) {
       const { bridge } = fakeBridge();
-      bridge.call = (_tool, _input, { inline }) => {
-        seen.push(inline);
+      bridge.call = (_tool, _input, { viewCall }) => {
+        seen.push(viewCall);
         return Promise.resolve({ data: {} });
       };
-      const root = recorder();
-      const module = { ...root.module, handlesPrompts };
-      const started = await startView({ views: { "invoices/browser": module }, boot, bridge, element: document.body });
+      const module = { ...recorder().module, handlesPrompts };
+      const withChannel = { ...boot, ...(viewCallTool ? { viewCallTool } : {}) };
+      const started = await startView({
+        views: { "invoices/browser": module },
+        boot: withChannel,
+        bridge,
+        element: document.body,
+      });
       await started.props().emit.call("send", { id: "inv_1" });
     }
-    expect(seen).toEqual([true, false]);
+    expect(seen).toEqual(["syrinx_view_call", undefined, undefined]);
   });
 
   it("fails clearly when the bundle lacks the root view", async () => {

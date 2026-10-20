@@ -14,13 +14,23 @@ const endpoint = params.get("endpoint") ?? "/mcp/invoices";
 const tool = params.get("tool") ?? "list";
 const args = JSON.parse(params.get("args") ?? "{}") as Record<string, unknown>;
 const theme = params.get("theme") === "dark" ? "dark" : "light";
+// Hosts that render views declare MCP Apps support; apps=0 plays one that does not.
+const declaresApps = params.get("apps") !== "0";
 const status = document.querySelector<HTMLElement>("#status") ?? document.body;
 window.host = { ready: false, elicited: [], links: [] };
 
 async function main() {
   const client = new Client(
     { name: "e2e-host", version: "0.0.0" },
-    { versionNegotiation: { mode: "auto" }, capabilities: { elicitation: {} } },
+    {
+      versionNegotiation: { mode: "auto" },
+      capabilities: {
+        elicitation: {},
+        ...(declaresApps
+          ? { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } }
+          : {}),
+      },
+    },
   );
   // Like VS Code: questions are only shown during a chat turn, and a click in a view is never one, so decline.
   client.setRequestHandler("elicitation/create", (request) => {

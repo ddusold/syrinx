@@ -13,19 +13,27 @@ import {
 import { buildServer, checkToolNames, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
 
 export {
-  ASKS_INLINE_META_KEY,
+  APPS_EXTENSION,
   ASKS_META_KEY,
   buildServer,
   ERROR_META_KEY,
-  INPUT_META_KEY,
   META_PREFIX,
-  RESUME_META_KEY,
   SURFACE_META_KEY,
   VIEW_META_KEY,
+  VIEW_CALL_TOOL,
   VIEW_MIME_TYPE,
   viewUri,
 } from "./projection.js";
-export type { Caller, Era, ProjectionOptions, Scope, Serving, ViewShell, ViewShells } from "./projection.js";
+export type {
+  Caller,
+  Era,
+  ProjectionOptions,
+  Scope,
+  Serving,
+  ViewCallResult,
+  ViewShell,
+  ViewShells,
+} from "./projection.js";
 export type { AuthMetadataOptions } from "@modelcontextprotocol/server";
 
 export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {

@@ -53,15 +53,14 @@ export const VIEW_META_KEY = `${META_PREFIX}/view`;
 /** Views set this to "app" in `tools/call` `_meta`, so calls they make are audited as the app surface. */
 export const SURFACE_META_KEY = `${META_PREFIX}/surface`;
 /**
- * Views set this to true in `tools/call` `_meta` when they show questions themselves. Hosts only answer elicitations
- * during a chat turn (VS Code rejects them otherwise), so a question raised by a click in a view would be declined
- * before the user saw it. For these calls, questions come back to the view in {@link INPUT_META_KEY} instead.
+ * The tool views call operations through: `{ app, operation, input, resume? }`, visible to views only. Hosts relay a
+ * view's tool calls but keep their own `_meta` (VS Code replaces it) and only show questions during a chat turn,
+ * so a confirmation raised by a click would be declined unseen. Through this tool, questions come back to the view
+ * as data and the view returns the answers as arguments, still checked against the sealed `requestState`.
  */
-export const ASKS_INLINE_META_KEY = `${META_PREFIX}/asksInline`;
-/** On a tool result for a view that asks inline: the questions and sealed `requestState`, as `input_required` carries them. */
-export const INPUT_META_KEY = `${META_PREFIX}/input`;
-/** In `tools/call` `_meta` from such a view: the answers and the echoed `requestState`. */
-export const RESUME_META_KEY = `${META_PREFIX}/resume`;
+export const VIEW_CALL_TOOL = "syrinx_view_call";
+/** The MCP Apps extension id hosts declare in `capabilities.extensions`. */
+export const APPS_EXTENSION = "io.modelcontextprotocol/ui";
 /** The MCP Apps resource type (`io.modelcontextprotocol/ui`). */
 export const VIEW_MIME_TYPE = "text/html;profile=mcp-app";
 
@@ -268,31 +267,38 @@ function surfaceOf(ctx: ServerContext, operation: Operation): Surface {
   return meta?.[SURFACE_META_KEY] !== "app" && isVisible(operation, "model") ? "model" : "app";
 }
 
-/** True for a call from a view that shows questions itself; its questions and answers travel in `_meta`. */
-function asksInline(ctx: ServerContext, surface: Surface): boolean {
-  const meta = ctx.mcpReq._meta as Record<string, unknown> | undefined;
-  return surface === "app" && meta?.[ASKS_INLINE_META_KEY] === true;
+/**
+ * Whether the client declared MCP Apps support. The view channel answers only such clients: answers travel as tool
+ * arguments, so a model must not be able to call it, and only Apps hosts hide app-only tools from the model.
+ */
+function clientDeclaresApps(ctx: ServerContext, server: McpServer, serving: Serving): boolean {
+  type Caps = { extensions?: Record<string, unknown> } | undefined;
+  if (serving.era === "legacy") {
+    // 2025-era clients declare once at initialize, which stateless HTTP does not keep.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    return serving.connected ? !!(server.server.getClientCapabilities() as Caps)?.extensions?.[APPS_EXTENSION] : false;
+  }
+  const envelope = ctx.mcpReq.envelope as Record<string, Caps> | undefined;
+  return !!envelope?.[CLIENT_CAPABILITIES]?.extensions?.[APPS_EXTENSION];
 }
 
-/** Answers a view sent back in `_meta`, when they are well formed; the registry checks them fully. */
-function inlineResume(ctx: ServerContext): Resume | undefined {
-  const meta = ctx.mcpReq._meta as Record<string, unknown> | undefined;
-  const resume = meta?.[RESUME_META_KEY] as { requestState?: unknown; inputResponses?: unknown } | undefined;
-  if (typeof resume?.requestState !== "string") return undefined;
-  const responses = resume.inputResponses;
+/** What the view channel returns, in `structuredContent` (and as JSON text): never in `_meta`, which hosts may drop. */
+export type ViewCallResult =
+  | { resultType: "complete"; data: unknown; view?: ViewResultMeta }
+  | { resultType: "input_required"; inputRequests: Record<string, unknown>; requestState: string }
+  | { resultType: "error"; error: { kind: string; message: string; issues?: readonly unknown[] } };
+
+function viewCallResult(result: ViewCallResult): CallToolResult {
   return {
-    requestState: resume.requestState,
-    inputResponses: responses && typeof responses === "object" ? (responses as Resume["inputResponses"]) : {},
+    ...(result.resultType === "error" ? { isError: true } : {}),
+    content: [{ type: "text", text: JSON.stringify(result) }],
+    structuredContent: result,
   };
 }
 
-/**
- * Questions for a view that asks inline: an ordinary tool result, so neither the host nor the SDK's legacy shim
- * intercepts it. Marked as an error so clients skip output-schema validation; the view reads `_meta` first. The
- * questions keep the `input_required` shape, and `requestState` stays sealed and bound to caller and input.
- */
-function inlineQuestions(result: InputRequired): CallToolResult {
-  const inputRequests = Object.fromEntries(
+/** Questions in the `input_required` shape, as embedded elicitation requests. */
+const asElicitations = (result: InputRequired) =>
+  Object.fromEntries(
     Object.entries(result.inputRequests).map(([key, request]) => [
       key,
       {
@@ -305,12 +311,22 @@ function inlineQuestions(result: InputRequired): CallToolResult {
       },
     ]),
   );
-  return {
-    isError: true,
-    content: [{ type: "text", text: "Waiting for the user to answer in the view." }],
-    _meta: { [INPUT_META_KEY]: { inputRequests, requestState: result.requestState } },
-  };
-}
+
+const viewCallSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    app: { type: "string", description: "The app that owns the operation." },
+    operation: { type: "string", description: "The operation to call; it must be visible to views." },
+    input: { type: "object", description: "The operation's input." },
+    resume: {
+      type: "object",
+      description: "Answers to the questions of an earlier call, with its requestState echoed.",
+      properties: { requestState: { type: "string" }, inputResponses: { type: "object" } },
+      required: ["requestState"],
+    },
+  },
+  required: ["app", "operation"],
+};
 
 const fingerprints = new WeakMap<Operation, Promise<string>>();
 const fingerprint = (operation: Operation) => {
@@ -338,7 +354,13 @@ function bindings(registry: Registry) {
  * endpoint. Operations of apps outside the scope are left out, so calls to them fail clearly in the view.
  */
 async function viewBoot(registry: Registry, root: View, scope: Scope): Promise<ViewBoot> {
-  const boot: ViewBoot = { view: viewId(root), channel: "mcp", operations: {}, features: {} };
+  const boot: ViewBoot = {
+    view: viewId(root),
+    channel: "mcp",
+    operations: {},
+    features: {},
+    viewCallTool: VIEW_CALL_TOOL,
+  };
   const inScope = new Set(appsIn(registry, scope).map((a) => a.name));
   for (const v of viewClosure(root)) {
     boot.features[viewId(v)] = v.features;
@@ -375,6 +397,80 @@ function contents(uri: string, mimeType: string, data: unknown) {
     throw new SyrinxError("internal", `A ${mimeType} resource must return a string body.`);
   }
   return mimeType.startsWith("text/") ? { uri, mimeType, text: data } : { uri, mimeType, blob: data };
+}
+
+/** Registers {@link VIEW_CALL_TOOL}: views call operations through it and get questions back as data. */
+function registerViewChannel(
+  server: McpServer,
+  options: ProjectionOptions,
+  scope: Scope,
+  caller: Caller,
+  serving: Serving,
+  bound: Map<string, { view: View; op: string; component?: string }>,
+) {
+  const { registry, logger } = options;
+  const served = new Set(appsIn(registry, scope).map((a) => a.name));
+  server.registerTool(
+    VIEW_CALL_TOOL,
+    {
+      title: "View call",
+      description: "Calls an operation on behalf of a view. Only views use this tool.",
+      inputSchema: publishOnly(viewCallSchema),
+      _meta: { ui: { visibility: ["app"] } },
+    },
+    async (args, ctx) => {
+      const declared = clientDeclaresApps(ctx, server, serving);
+      const { app, operation, input, resume } = args as {
+        app?: unknown;
+        operation?: unknown;
+        input?: unknown;
+        resume?: { requestState?: unknown; inputResponses?: unknown };
+      };
+      logger?.debug("MCP view call", { app: String(app), operation: String(operation), appsClient: declared });
+      if (!declared) {
+        return viewCallResult({
+          resultType: "error",
+          error: { kind: "unavailable", message: "Only MCP Apps hosts may use the view channel." },
+        });
+      }
+      try {
+        if (typeof app !== "string" || typeof operation !== "string" || !served.has(app)) {
+          throw new SyrinxError("not_found", `Unknown operation "${String(app)}.${String(operation)}".`);
+        }
+        const call = callOptions(ctx, caller, options, true, "app");
+        if (typeof resume?.requestState === "string") {
+          const responses = resume.inputResponses;
+          call.resume = {
+            requestState: resume.requestState,
+            inputResponses: responses && typeof responses === "object" ? (responses as Resume["inputResponses"]) : {},
+          };
+        }
+        const result = await registry.invoke(app, operation, input ?? {}, call);
+        if (result.resultType === "input_required") {
+          return viewCallResult({
+            resultType: "input_required",
+            inputRequests: asElicitations(result),
+            requestState: result.requestState,
+          });
+        }
+        const binding = bound.get(`${app}.${operation}`);
+        const target = registry.get(app, operation);
+        const view: ViewResultMeta | undefined =
+          binding && target
+            ? {
+                view: viewId(binding.view),
+                op: operation,
+                ...(binding.component ? { component: binding.component } : {}),
+                schemaVersion: await fingerprint(target),
+              }
+            : undefined;
+        return viewCallResult({ resultType: "complete", data: result.data, ...(view ? { view } : {}) });
+      } catch (error) {
+        const e = asSyrinx(error, logger);
+        return viewCallResult({ resultType: "error", error: details(e) });
+      }
+    },
+  );
 }
 
 /**
@@ -455,15 +551,10 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
         async (args, ctx) => {
           try {
             const surface = surfaceOf(ctx, operation);
-            const inline = asksInline(ctx, surface);
-            // A view that asks inline can always ask, whatever the client declares.
-            const call = callOptions(ctx, caller, options, inline || clientCanAsk(ctx, server, serving), surface);
-            const resume = inline ? inlineResume(ctx) : undefined;
-            if (resume) call.resume = resume;
+            logger?.debug("MCP tool call", { tool: toolName(app, opName, operation, scope), surface });
+            const call = callOptions(ctx, caller, options, clientCanAsk(ctx, server, serving), surface);
             const result = await registry.invoke(app.name, opName, args, call);
-            if (result.resultType === "input_required") {
-              return inline ? inlineQuestions(result) : askClient(result, era, connected);
-            }
+            if (result.resultType === "input_required") return askClient(result, era, connected);
             const content = mcp?.content
               ? [...mcp.content(result.data)]
               : [{ type: "text" as const, text: JSON.stringify(result.data) }];
@@ -558,6 +649,8 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
       if (p.complete) completable.prompts.set(name, { app: app.name, prompt: promptName });
     }
   }
+
+  if (views) registerViewChannel(server, options, scope, caller, serving, bound);
 
   if (completable.prompts.size || completable.resources.size) {
     server.server.registerCapabilities({ completions: {} });

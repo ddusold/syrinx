@@ -76,7 +76,7 @@ Build the bundles with `buildViews({ apps, outDir, plugins: [vue()] })`, load th
 
 Parts of one view share typed state with `defineViewContext` and `<ViewContext>`/`useViewContext`, including views embedded from other apps.
 
-Operations a view calls can still confirm or ask (`confirm`, `ctx.ask`). Hosts only show those questions during a chat turn, and a click in a view is never one, so Vue views ask inside the view instead: the question travels back in the tool result's `_meta`, a default dialog shows it, and the answer returns with the sealed `requestState`. `toView(Component, { prompt: false })` lets a view draw its own dialog from `useView().value.prompt`.
+Operations a view calls can still confirm or ask (`confirm`, `ctx.ask`). Hosts only show those questions during a chat turn (VS Code rejects them otherwise, and strips `_meta` from view calls), so Vue views call operations through an app-only `syrinx_view_call` tool: questions come back to the view as data, a default dialog shows them, and the answers return as arguments with the sealed `requestState`. The server answers that tool only for clients that declare MCP Apps support, since those hide app-only tools from the model; other clients get the host prompt as before. `toView(Component, { prompt: false })` lets a view draw its own dialog from `useView().value.prompt`.
 
 ## Development
 

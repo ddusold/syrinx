@@ -14,9 +14,6 @@ export const META_PREFIX = "io.github.ddusold.syrinx";
 export const ERROR_META_KEY = `${META_PREFIX}/error`;
 export const VIEW_META_KEY = `${META_PREFIX}/view`;
 export const SURFACE_META_KEY = `${META_PREFIX}/surface`;
-export const ASKS_INLINE_META_KEY = `${META_PREFIX}/asksInline`;
-export const INPUT_META_KEY = `${META_PREFIX}/input`;
-export const RESUME_META_KEY = `${META_PREFIX}/resume`;
 
 /** The subset of an MCP tool result a view reads. */
 export interface ToolResultLike {
@@ -31,9 +28,6 @@ export interface ToolResultLike {
 
 /** Turns a tool result into data or a {@link ViewCallError}, plus the view metadata of bound operations. */
 export function fromToolResult(result: ToolResultLike): BridgeResult {
-  // Questions for a view that asks inline arrive in _meta, shaped as input_required.
-  const inline = result._meta?.[INPUT_META_KEY] as Pick<ToolResultLike, "inputRequests" | "requestState"> | undefined;
-  if (inline) return fromToolResult({ resultType: "input_required", ...inline });
   if (result.resultType === "input_required") {
     const requests: InputNeeded["requests"] = {};
     for (const [key, request] of Object.entries(result.inputRequests ?? {})) {
@@ -68,6 +62,39 @@ export function fromToolResult(result: ToolResultLike): BridgeResult {
   return { data, ...(view ? { view } : {}) };
 }
 
+/** What the server's view channel tool returns, in `structuredContent` (or as JSON text when a host drops that). */
+type ViewCallResult =
+  | { resultType: "complete"; data: unknown; view?: ViewResultMeta }
+  | { resultType: "input_required"; inputRequests: ToolResultLike["inputRequests"]; requestState: string }
+  | { resultType: "error"; error: { kind: string; message: string; issues?: FieldIssue[] } };
+
+/** Reads a view channel result into data, questions or an error. */
+export function fromViewCall(result: ToolResultLike): BridgeResult {
+  let envelope = result.structuredContent as ViewCallResult | undefined;
+  const text = result.content?.find((c) => c.type === "text")?.text;
+  if (envelope?.resultType === undefined && text !== undefined) {
+    try {
+      envelope = JSON.parse(text) as ViewCallResult;
+    } catch {
+      envelope = undefined;
+    }
+  }
+  if (!envelope?.resultType) {
+    return { error: new ViewCallError("internal", text ?? "The view channel returned no result.") };
+  }
+  if (envelope.resultType === "input_required") {
+    return fromToolResult({
+      resultType: "input_required",
+      ...(envelope.inputRequests ? { inputRequests: envelope.inputRequests } : {}),
+      requestState: envelope.requestState,
+    });
+  }
+  if (envelope.resultType === "error") {
+    return { error: new ViewCallError(envelope.error.kind, envelope.error.message, envelope.error.issues) };
+  }
+  return { data: envelope.data, ...(envelope.view ? { view: envelope.view } : {}) };
+}
+
 function toHostContext(context: AppsHostContext): HostContext {
   const host: HostContext = {};
   if (context.theme) host.theme = context.theme;
@@ -87,6 +114,7 @@ function toHostContext(context: AppsHostContext): HostContext {
 export function createMcpBridge(channel: AppsChannel | AppsChannelOptions = {}): HostBridge {
   const apps = "connect" in channel ? channel : createAppsChannel(channel);
   let context: AppsHostContext = {};
+  let channelOpen = true;
   const hostListeners: ((host: HostContext) => void)[] = [];
   const resultListeners: ((result: BridgeResult) => void)[] = [];
 
@@ -109,18 +137,26 @@ export function createMcpBridge(channel: AppsChannel | AppsChannelOptions = {}):
     host: () => toHostContext(context),
     onHostContext: (listener) => void hostListeners.push(listener),
     onResult: (listener) => void resultListeners.push(listener),
-    async call(tool, input, { resume, inline }) {
+    async call(tool, input, { app, operation, resume, viewCall }) {
       try {
-        // Inline, questions and answers ride in _meta, which hosts pass through untouched. Otherwise the answers go
-        // on the call's params, the retry channel MCP 2026-07-28 defines, and the host does the asking.
+        if (viewCall && channelOpen) {
+          const result = fromViewCall(
+            await apps.request<ToolResultLike>(METHODS.callTool, {
+              name: viewCall,
+              arguments: { app, operation, input, ...(resume ? { resume } : {}) },
+              _meta: { [SURFACE_META_KEY]: "app" },
+            }),
+          );
+          if (result.error?.kind !== "unavailable") return result;
+          // The server refused the channel (this host did not declare MCP Apps): call directly from now on.
+          channelOpen = false;
+        }
+        // Answers go on the call's params, the retry channel MCP 2026-07-28 defines; the host does the asking.
         const result = await apps.request<ToolResultLike>(METHODS.callTool, {
           name: tool,
           arguments: input as Record<string, unknown>,
-          _meta: {
-            [SURFACE_META_KEY]: "app",
-            ...(inline ? { [ASKS_INLINE_META_KEY]: true, ...(resume ? { [RESUME_META_KEY]: resume } : {}) } : {}),
-          },
-          ...(inline ? {} : resume),
+          _meta: { [SURFACE_META_KEY]: "app" },
+          ...resume,
         });
         return fromToolResult(result);
       } catch (error) {
