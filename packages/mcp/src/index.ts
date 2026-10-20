@@ -124,13 +124,29 @@ function hostsFromEnv(): string[] | undefined {
   return extra?.length ? [...localhostAllowedHostnames(), ...extra] : undefined;
 }
 
+/** The JSON-RPC method of a POST, read from a clone so the body stays for the SDK. */
+async function requestMethod(request: Request): Promise<string | undefined> {
+  if (request.method !== "POST") return undefined;
+  try {
+    const body = (await request.clone().json()) as { method?: unknown };
+    return typeof body.method === "string" ? body.method : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Gzips a complete JSON response when the client accepts gzip. Every exchange is one JSON response (no streams), so
- * the body is buffered and its size known. Uses CompressionStream, available on Node, Bun, Deno and edge runtimes.
+ * Gzips a complete response when the client accepts gzip. JSON responses are one body, so it is buffered and its size
+ * known. Clients that accept SSE too (every Streamable HTTP client must) are answered over SSE, which may stream
+ * notifications mid-call, so it is left alone, except for `resources/read`: one event, never progress, and the one
+ * response that is large (a view shell travels in it). Uses CompressionStream, available on Node, Bun, Deno and edge
+ * runtimes.
  */
-async function gzipped(request: Request, response: Response): Promise<Response> {
+async function gzipped(request: Request, response: Response, method: string | undefined): Promise<Response> {
   const accepts = /\bgzip\b/i.test(request.headers.get("accept-encoding") ?? "");
-  const json = response.headers.get("content-type")?.startsWith("application/json") ?? false;
+  const type = response.headers.get("content-type") ?? "";
+  const json =
+    type.startsWith("application/json") || (type.startsWith("text/event-stream") && method === "resources/read");
   if (!accepts || !json || !response.body || response.headers.has("content-encoding")) return response;
   const body = await response.arrayBuffer();
   if (body.byteLength < COMPRESS_MIN_BYTES) return new Response(body, response);
@@ -203,6 +219,8 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
       if (!scope) return jsonRpcError(404, "Not found.");
       const listen = await listenRequestId(request);
       if (listen !== undefined) return methodNotFound(listen, "subscriptions/listen");
+      // Read before the SDK takes the body; only a response that may be compressed needs it.
+      const method = options.compress === false ? undefined : await requestMethod(request);
 
       const hosts = options.allowedHosts ?? hostsFromEnv() ?? localhostAllowedHostnames();
       if (hosts !== false) {
@@ -238,7 +256,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
           extra: { [CALLER]: caller },
         },
       });
-      return options.compress === false ? response : gzipped(request, response);
+      return options.compress === false ? response : gzipped(request, response, method);
     },
     async close() {
       await Promise.all([...handlers.values()].map((h) => h.close()));

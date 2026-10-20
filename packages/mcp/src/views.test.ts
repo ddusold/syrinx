@@ -268,6 +268,43 @@ describe("views over MCP", () => {
     expect(seen.filter((s) => s.method === "resources/read").map((s) => s.encoding)).toEqual([null, null]);
   });
 
+  it("compresses a view shell answered over SSE, the answer every Streamable HTTP client gets, and nothing else over SSE", async () => {
+    const big = "y".repeat(20_000);
+    const large = createMcpSurface({ ...options, views: { render: () => ({ html: `<!doctype html><p>${big}</p>` }) } });
+    const post = (body: unknown) =>
+      large.fetch(
+        new Request("http://localhost/mcp/invoices", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            // A client that does not know the 2026 protocol accepts both, and is answered over SSE.
+            accept: "application/json, text/event-stream",
+            "accept-encoding": "gzip",
+            "mcp-protocol-version": "2025-06-18",
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+
+    const shell = await post({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/read",
+      params: { uri: "ui://invoices/browser" },
+    });
+    expect(shell.headers.get("content-type")).toContain("text/event-stream");
+    expect(shell.headers.get("content-encoding")).toBe("gzip");
+    const raw = new Uint8Array(await shell.arrayBuffer());
+    expect(raw.byteLength).toBeLessThan(2_000);
+    const text = await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+    expect(text).toContain(big);
+
+    // Other SSE answers can carry notifications as they go, so they stay as they are.
+    const tools = await post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+    expect(tools.headers.get("content-type")).toContain("text/event-stream");
+    expect(tools.headers.get("content-encoding")).toBeNull();
+  });
+
   describe("the view channel", () => {
     interface Envelope {
       resultType: string;
