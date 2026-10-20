@@ -12,8 +12,20 @@ import {
 } from "@modelcontextprotocol/server";
 import { buildServer, checkToolNames, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
 
-export { ASKS_META_KEY, buildServer, ERROR_META_KEY, META_PREFIX } from "./projection.js";
-export type { Caller, Era, ProjectionOptions, Scope, Serving } from "./projection.js";
+export {
+  ASKS_INLINE_META_KEY,
+  ASKS_META_KEY,
+  buildServer,
+  ERROR_META_KEY,
+  INPUT_META_KEY,
+  META_PREFIX,
+  RESUME_META_KEY,
+  SURFACE_META_KEY,
+  VIEW_META_KEY,
+  VIEW_MIME_TYPE,
+  viewUri,
+} from "./projection.js";
+export type { Caller, Era, ProjectionOptions, Scope, Serving, ViewShell, ViewShells } from "./projection.js";
 export type { AuthMetadataOptions } from "@modelcontextprotocol/server";
 
 export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {
@@ -41,6 +53,11 @@ export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {
   oauth?: AuthMetadataOptions;
   /** How 2025-era clients are served. Defaults to the SDK's stateless fallback. */
   legacy?: "stateless" | "reject";
+  /**
+   * Gzips JSON responses over 1 KB for clients that accept it. View shells travel inside `resources/read` results,
+   * so this cuts their transfer to about a third. On by default; turn it off when a proxy in front compresses.
+   */
+  compress?: boolean;
 }
 
 export interface McpSurface {
@@ -82,6 +99,27 @@ const methodNotFound = (id: string | number | null, method: string) =>
     },
   );
 
+/** Bodies smaller than this are sent as they are: compressing them saves less than it costs. */
+const COMPRESS_MIN_BYTES = 1024;
+
+/**
+ * Gzips a complete JSON response when the client accepts gzip. Every exchange is one JSON response (no streams), so
+ * the body is buffered and its size known. Uses CompressionStream, available on Node, Bun, Deno and edge runtimes.
+ */
+async function gzipped(request: Request, response: Response): Promise<Response> {
+  const accepts = /\bgzip\b/i.test(request.headers.get("accept-encoding") ?? "");
+  const json = response.headers.get("content-type")?.startsWith("application/json") ?? false;
+  if (!accepts || !json || !response.body || response.headers.has("content-encoding")) return response;
+  const body = await response.arrayBuffer();
+  if (body.byteLength < COMPRESS_MIN_BYTES) return new Response(body, response);
+  const compressed = new Response(new Blob([body]).stream().pipeThrough(new CompressionStream("gzip")));
+  const headers = new Headers(response.headers);
+  headers.set("content-encoding", "gzip");
+  headers.delete("content-length");
+  headers.append("vary", "accept-encoding");
+  return new Response(compressed.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 /**
  * The MCP surface over Streamable HTTP: stateless, one JSON response per request, targeting 2026-07-28 with the
  * SDK's fallback for 2025-era clients. Each request gets a server built for its caller, so lists only show what
@@ -91,6 +129,12 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const { registry } = options;
   const basePath = (options.basePath ?? "/mcp").replace(/\/$/, "");
   checkToolNames(registry, "all");
+  const withViews = [...registry.apps.values()].filter((a) => Object.keys(a.views).length).map((a) => a.name);
+  if (withViews.length && !options.views) {
+    options.logger?.warn(
+      `MCP: apps ${withViews.join(", ")} declare views, but no view shells were given; serving without UI.`,
+    );
+  }
   for (const app of registry.apps.values()) {
     checkToolNames(registry, { app: app.name });
     for (const warning of lintApp(app)) {
@@ -164,7 +208,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
       if (principal) caller.principal = principal;
       if (tenant) caller.tenant = tenant;
 
-      return handlerFor(scope).fetch(request, {
+      const response = await handlerFor(scope).fetch(request, {
         authInfo: {
           token: "",
           clientId: principal?.id ?? "anonymous",
@@ -172,6 +216,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
           extra: { [CALLER]: caller },
         },
       });
+      return options.compress === false ? response : gzipped(request, response);
     },
     async close() {
       await Promise.all([...handlers.values()].map((h) => h.close()));

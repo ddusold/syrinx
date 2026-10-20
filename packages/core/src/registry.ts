@@ -34,6 +34,7 @@ import {
   type Resume,
 } from "./interaction.js";
 import type { StandardSchemaV1 } from "./standard-schema.js";
+import type { View } from "./view.js";
 
 export interface InvokeOptions<Deps = unknown> {
   deps?: Deps;
@@ -116,6 +117,7 @@ export interface Registry {
   get(app: string, operation: string): Operation | undefined;
   getResource(app: string, resource: string): Resource | undefined;
   getPrompt(app: string, prompt: string): Prompt | undefined;
+  getView(app: string, view: string): View | undefined;
   /**
    * Whether a caller would see this member in a listing: enabled for the tenant and, when it declares scopes, held
    * by the principal. Predicates need input, so they are checked only when the member is called.
@@ -285,10 +287,23 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
       uris.set(res.uri, `${app.name}.${name}`);
     }
   }
+  // An embedded view ships in its parent's bundle but calls its own app's operations, so that app must be here too.
+  for (const app of apps) {
+    for (const v of Object.values(app.views)) {
+      for (const child of v.embeds) {
+        if (byName.get(child.app)?.views[child.name] !== child) {
+          throw new TypeError(
+            `View "${app.name}.${v.name}" embeds "${child.app}.${child.name}", whose app is not registered.`,
+          );
+        }
+      }
+    }
+  }
 
   const get = (app: string, operation: string) => own(byName.get(app)?.operations, operation);
   const getResource = (app: string, resource: string) => own(byName.get(app)?.resources, resource);
   const getPrompt = (app: string, name: string) => own(byName.get(app)?.prompts, name);
+  const getView = (app: string, name: string) => own(byName.get(app)?.views, name);
   const member = (target: Target) =>
     target.operation !== undefined
       ? get(target.app, target.operation)
@@ -406,6 +421,7 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
     get,
     getResource,
     getPrompt,
+    getView,
     personalized,
 
     async allows(target, options = {}) {

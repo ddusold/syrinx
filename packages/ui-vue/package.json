@@ -1,0 +1,32 @@
+{
+  "name": "@syrinx/ui-vue",
+  "version": "0.0.0",
+  "description": "Vue binding for Syrinx views: turn components into views, share view context, embed other views.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --external vue"
+  },
+  "dependencies": {
+    "@syrinx/ui": "workspace:^"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@syrinx/core": "workspace:^",
+    "happy-dom": "^21.0.3",
+    "vue": "^3.5.44",
+    "zod": "^4.6.7"
+  }
+}

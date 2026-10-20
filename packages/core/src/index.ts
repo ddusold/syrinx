@@ -9,8 +9,21 @@ export type {
   Permissions,
   Prompt,
   Resource,
+  StampedViews,
   UriParams,
 } from "./app.js";
+export { bindingComponent, bindingOp, schemaVersion, view, viewClosure, viewId } from "./view.js";
+export type {
+  View,
+  ViewBinding,
+  ViewBoot,
+  ViewCsp,
+  ViewData,
+  ViewDefinition,
+  ViewExample,
+  ViewOperationRoute,
+  ViewResultMeta,
+} from "./view.js";
 export { toMessages } from "./content.js";
 export type { ContentBlock, PromptContent, PromptMessage, RenderedPrompt } from "./content.js";
 export { lintApp } from "./lint.js";

@@ -1,5 +1,6 @@
-import { defineApp, op, prompt, resource, type Context } from "@syrinx/core";
+import { defineApp, op, prompt, resource, view, type Context } from "@syrinx/core";
 import { z } from "zod";
+import { customers } from "./customers.js";
 
 export const Invoice = z.object({
   id: z.string(),
@@ -99,6 +100,34 @@ export const invoices = defineApp({
       output: Invoice,
       permissions: ["invoices:read"],
       read: ({ id }, ctx: Ctx) => load(ctx, id),
+    }),
+  },
+
+  views: {
+    // One composite view: the list and the detail share a selection, and the detail embeds the customers badge.
+    browser: view({
+      title: "Invoices",
+      entry: new URL("./views/InvoiceBrowser.vue", import.meta.url),
+      boundTo: ["list", { op: "get", component: "detail" }],
+      calls: ["list", "get", "send"],
+      embeds: [customers.views.badge],
+      features: { actions: true },
+      examples: [
+        {
+          title: "Two invoices",
+          data: {
+            items: [
+              { id: "inv_2", customer: "Globex", totalCents: 4500, status: "sent" },
+              { id: "inv_1", customer: "Acme Corp", totalCents: 120000, status: "draft" },
+            ],
+          },
+        },
+        {
+          title: "One invoice, detail only",
+          component: "detail",
+          data: { id: "inv_1", customer: "Acme Corp", totalCents: 120000, status: "draft" },
+        },
+      ],
     }),
   },
 

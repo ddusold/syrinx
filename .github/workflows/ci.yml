@@ -92,3 +92,24 @@ jobs:
           echo "fixture server did not start" && exit 1
       # Fails on any failure outside examples/conformance/expected-failures.yaml, and on baseline entries that pass.
       - run: pnpm conformance
+
+  views:
+    name: Views in a headless browser (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm build # the example server loads the packages from dist
+      # Builds the example's views, serves them behind a real MCP Apps host page, and checks three widths.
+      - run: pnpm test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: test-results/

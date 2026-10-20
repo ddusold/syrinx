@@ -1,0 +1,30 @@
+{
+  "name": "@syrinx/vite",
+  "version": "0.0.0",
+  "description": "Builds Syrinx views into self-contained bundles with a manifest and a gallery page.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --external vite"
+  },
+  "dependencies": {
+    "@syrinx/core": "workspace:^",
+    "@syrinx/ui": "workspace:^"
+  },
+  "peerDependencies": {
+    "vite": "^7.0.0"
+  },
+  "devDependencies": {
+    "vite": "^7.3.7"
+  }
+}

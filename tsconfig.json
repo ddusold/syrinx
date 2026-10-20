@@ -7,8 +7,19 @@
       "@syrinx/mcp": ["./packages/mcp/src/index.ts"],
       "@syrinx/mcp/stdio": ["./packages/mcp/src/stdio.ts"],
       "@syrinx/rest": ["./packages/rest/src/index.ts"],
-      "@syrinx/testing": ["./packages/testing/src/index.ts"]
+      "@syrinx/testing": ["./packages/testing/src/index.ts"],
+      "@syrinx/ui": ["./packages/ui/src/index.ts"],
+      "@syrinx/ui/server": ["./packages/ui/src/server.ts"],
+      "@syrinx/ui-vue": ["./packages/ui-vue/src/index.ts"],
+      "@syrinx/vite": ["./packages/vite/src/index.ts"]
     }
   },
-  "include": ["packages/*/src", "examples/*/src", "vitest.config.ts"]
+  "include": [
+    "packages/*/src",
+    "examples/*/src",
+    "examples/*/e2e",
+    "examples/*/scripts",
+    "vitest.config.ts",
+    "playwright.config.ts"
+  ]
 }

@@ -1,0 +1,14 @@
+{
+  // Vue single-file components, checked with vue-tsc. The main tsconfig covers every other file.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": ["examples/*/src/views/**/*.vue", "examples/*/src/views/**/*.ts"],
+  "vueCompilerOptions": {
+    // strictTemplates minus unknown props, which also rejects data-* attributes on native elements.
+    "checkUnknownComponents": true,
+    "checkUnknownEvents": true,
+    "checkUnknownDirectives": true
+  }
+}

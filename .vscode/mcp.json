@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "syrinx-invoices": {
+      "type": "stdio",
+      "command": "pnpm",
+      "args": ["--dir", "examples/invoices", "-s", "stdio"]
+    },
+    "syrinx-invoices-http": {
+      "type": "http",
+      "url": "http://localhost:3000/mcp",
+      "headers": { "Authorization": "Bearer writer" }
+    }
+  }
+}

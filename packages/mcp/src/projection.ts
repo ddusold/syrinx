@@ -1,19 +1,30 @@
 import {
+  bindingComponent,
+  bindingOp,
+  schemaVersion,
   SyrinxError,
   templateVariables,
   toJsonSchema,
   isVisible,
+  viewClosure,
+  viewId,
   type App,
   type InputRequest,
   type InputRequired,
+  type Resume,
   type InvokeOptions,
   type JsonSchema,
   type Logger,
   type Operation,
   type Principal,
   type Registry,
+  type Surface,
   type Tenant,
   type Tracer,
+  type View,
+  type ViewBoot,
+  type ViewCsp,
+  type ViewResultMeta,
 } from "@syrinx/core";
 import {
   INTERNAL_ERROR,
@@ -37,6 +48,37 @@ export const META_PREFIX = "io.github.ddusold.syrinx";
 export const ERROR_META_KEY = `${META_PREFIX}/error`;
 /** Set on tools whose operation may answer `input_required`, so hosts know before calling. */
 export const ASKS_META_KEY = `${META_PREFIX}/asks`;
+/** On bound tool results: which view renders the data, as {@link ViewResultMeta}. */
+export const VIEW_META_KEY = `${META_PREFIX}/view`;
+/** Views set this to "app" in `tools/call` `_meta`, so calls they make are audited as the app surface. */
+export const SURFACE_META_KEY = `${META_PREFIX}/surface`;
+/**
+ * Views set this to true in `tools/call` `_meta` when they show questions themselves. Hosts only answer elicitations
+ * during a chat turn (VS Code rejects them otherwise), so a question raised by a click in a view would be declined
+ * before the user saw it. For these calls, questions come back to the view in {@link INPUT_META_KEY} instead.
+ */
+export const ASKS_INLINE_META_KEY = `${META_PREFIX}/asksInline`;
+/** On a tool result for a view that asks inline: the questions and sealed `requestState`, as `input_required` carries them. */
+export const INPUT_META_KEY = `${META_PREFIX}/input`;
+/** In `tools/call` `_meta` from such a view: the answers and the echoed `requestState`. */
+export const RESUME_META_KEY = `${META_PREFIX}/resume`;
+/** The MCP Apps resource type (`io.modelcontextprotocol/ui`). */
+export const VIEW_MIME_TYPE = "text/html;profile=mcp-app";
+
+/** A rendered view shell: the HTML document a host loads into its sandboxed iframe. */
+export interface ViewShell {
+  html: string;
+  /** Origins the shell needs beyond its own inline content, such as a CDN serving its hosted assets. */
+  csp?: ViewCsp;
+}
+
+/** Turns a view and its boot data into a shell. `@syrinx/ui/server` builds one from the bundles `@syrinx/vite` emits. */
+export interface ViewShells {
+  render(view: View, boot: ViewBoot): ViewShell | Promise<ViewShell>;
+}
+
+/** The `ui://` resource a view is served at. */
+export const viewUri = (v: Pick<View, "app" | "name">) => `ui://${v.app}/${v.name}`;
 
 export type Era = "legacy" | "modern";
 
@@ -56,6 +98,11 @@ export interface ProjectionOptions<Deps = unknown> {
   tracer?: Tracer;
   /** How long clients may cache list results, in milliseconds. Defaults to 60 seconds. */
   listTtlMs?: number;
+  /**
+   * Built view shells. With them, views are served as `ui://{app}/{view}` resources, bound tools point at them, and
+   * operations visible only to views are listed for hosts to proxy. Without them, views are left out.
+   */
+  views?: ViewShells;
 }
 
 /** How the instance is served. `connected` means one long-lived connection (stdio) rather than one request. */
@@ -88,12 +135,15 @@ const memberName = (app: App, name: string, scope: Scope) => (scope === "all" ? 
 export const toolName = (app: App, opName: string, operation: Operation, scope: Scope) =>
   memberName(app, operation.mcp?.name ?? opName, scope);
 
+/** Operations become tools when a model or a view can call them. */
+const isTool = (operation: Operation) => isVisible(operation, "model") || isVisible(operation, "app");
+
 /** Fails fast on two operations projecting to one tool name, which the SDK would otherwise reject per request. */
 export function checkToolNames(registry: Registry, scope: Scope): void {
   const seen = new Map<string, string>();
   for (const app of appsIn(registry, scope)) {
     for (const [opName, operation] of Object.entries(app.operations)) {
-      if (!isVisible(operation, "model")) continue;
+      if (!isTool(operation)) continue;
       const name = toolName(app, opName, operation, scope);
       const other = seen.get(name);
       if (other)
@@ -118,9 +168,15 @@ function clientCanAsk(ctx: ServerContext, server: McpServer, serving: Serving): 
   return !!envelope?.[CLIENT_CAPABILITIES]?.elicitation;
 }
 
-function callOptions(ctx: ServerContext, caller: Caller, options: ProjectionOptions, canAsk = true): InvokeOptions {
+function callOptions(
+  ctx: ServerContext,
+  caller: Caller,
+  options: ProjectionOptions,
+  canAsk = true,
+  surface: Surface = "model",
+): InvokeOptions {
   const call: InvokeOptions = {
-    surface: "model",
+    surface,
     signal: ctx.mcpReq.signal,
     requestId: String(ctx.mcpReq.id),
     canAsk,
@@ -202,6 +258,115 @@ function questions(result: InputRequired) {
   });
 }
 
+/**
+ * Which surface a tool call came from. Hosts proxy view calls through the same `tools/call`, so a view marks its
+ * own; an operation only views may call is the app surface either way. The mark is advisory, not a security
+ * boundary: permissions apply on every surface.
+ */
+function surfaceOf(ctx: ServerContext, operation: Operation): Surface {
+  const meta = ctx.mcpReq._meta as Record<string, unknown> | undefined;
+  return meta?.[SURFACE_META_KEY] !== "app" && isVisible(operation, "model") ? "model" : "app";
+}
+
+/** True for a call from a view that shows questions itself; its questions and answers travel in `_meta`. */
+function asksInline(ctx: ServerContext, surface: Surface): boolean {
+  const meta = ctx.mcpReq._meta as Record<string, unknown> | undefined;
+  return surface === "app" && meta?.[ASKS_INLINE_META_KEY] === true;
+}
+
+/** Answers a view sent back in `_meta`, when they are well formed; the registry checks them fully. */
+function inlineResume(ctx: ServerContext): Resume | undefined {
+  const meta = ctx.mcpReq._meta as Record<string, unknown> | undefined;
+  const resume = meta?.[RESUME_META_KEY] as { requestState?: unknown; inputResponses?: unknown } | undefined;
+  if (typeof resume?.requestState !== "string") return undefined;
+  const responses = resume.inputResponses;
+  return {
+    requestState: resume.requestState,
+    inputResponses: responses && typeof responses === "object" ? (responses as Resume["inputResponses"]) : {},
+  };
+}
+
+/**
+ * Questions for a view that asks inline: an ordinary tool result, so neither the host nor the SDK's legacy shim
+ * intercepts it. Marked as an error so clients skip output-schema validation; the view reads `_meta` first. The
+ * questions keep the `input_required` shape, and `requestState` stays sealed and bound to caller and input.
+ */
+function inlineQuestions(result: InputRequired): CallToolResult {
+  const inputRequests = Object.fromEntries(
+    Object.entries(result.inputRequests).map(([key, request]) => [
+      key,
+      {
+        method: "elicitation/create",
+        params: {
+          mode: "form",
+          message: request.message,
+          requestedSchema: request.kind === "ask" ? request.schema : { type: "object", properties: {} },
+        },
+      },
+    ]),
+  );
+  return {
+    isError: true,
+    content: [{ type: "text", text: "Waiting for the user to answer in the view." }],
+    _meta: { [INPUT_META_KEY]: { inputRequests, requestState: result.requestState } },
+  };
+}
+
+const fingerprints = new WeakMap<Operation, Promise<string>>();
+const fingerprint = (operation: Operation) => {
+  let version = fingerprints.get(operation);
+  if (!version) fingerprints.set(operation, (version = schemaVersion(operation)));
+  return version;
+};
+
+/** Each bound operation, keyed `app.op`, with the view it renders. */
+function bindings(registry: Registry) {
+  const bound = new Map<string, { view: View; op: string; component?: string }>();
+  for (const app of registry.apps.values()) {
+    for (const v of Object.values(app.views)) {
+      for (const b of v.boundTo) {
+        const component = bindingComponent(b);
+        bound.set(`${app.name}.${bindingOp(b)}`, { view: v, op: bindingOp(b), ...(component ? { component } : {}) });
+      }
+    }
+  }
+  return bound;
+}
+
+/**
+ * What a view's shell needs: the tool name of every operation it and its embeds call or are bound to, on this
+ * endpoint. Operations of apps outside the scope are left out, so calls to them fail clearly in the view.
+ */
+async function viewBoot(registry: Registry, root: View, scope: Scope): Promise<ViewBoot> {
+  const boot: ViewBoot = { view: viewId(root), channel: "mcp", operations: {}, features: {} };
+  const inScope = new Set(appsIn(registry, scope).map((a) => a.name));
+  for (const v of viewClosure(root)) {
+    boot.features[viewId(v)] = v.features;
+    const app = registry.apps.get(v.app);
+    if (!app || !inScope.has(v.app)) continue;
+    const bound = new Set(v.boundTo.map(bindingOp));
+    for (const opName of new Set([...v.calls, ...bound])) {
+      const operation = app.operations[opName];
+      if (!operation || !isTool(operation)) continue;
+      boot.operations[`${v.app}.${opName}`] = {
+        tool: toolName(app, opName, operation, scope),
+        ...(bound.has(opName) ? { schemaVersion: await fingerprint(operation) } : {}),
+      };
+    }
+  }
+  return boot;
+}
+
+/** Origins the view declares plus those its shell needs, each list deduplicated; undefined when both are empty. */
+function mergeCsp(a: ViewCsp | undefined, b: ViewCsp | undefined): Record<string, string[]> | undefined {
+  const merged: Record<string, string[]> = {};
+  for (const k of ["connectDomains", "resourceDomains", "frameDomains"] as const) {
+    const origins = [...new Set([...(a?.[k] ?? []), ...(b?.[k] ?? [])])];
+    if (origins.length) merged[k] = origins;
+  }
+  return Object.keys(merged).length ? merged : undefined;
+}
+
 const isJson = (mimeType: string) => /^application\/(?:[\w.-]+\+)?json$/.test(mimeType);
 
 function contents(uri: string, mimeType: string, data: unknown) {
@@ -251,12 +416,27 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
     resources: new Map<string, { app: string; resource: string }>(),
   };
 
+  const { views } = options;
+  const bound = views ? bindings(registry) : new Map<string, never>();
+
   for (const app of appsIn(registry, scope)) {
     for (const [opName, operation] of Object.entries(app.operations)) {
-      if (!isVisible(operation, "model") || !(await allows({ app: app.name, operation: opName }))) continue;
+      // Operations only views call are listed only when views are served; without views nothing would call them.
+      const listed = isVisible(operation, "model") || (views !== undefined && isVisible(operation, "app"));
+      if (!listed || !(await allows({ app: app.name, operation: opName }))) continue;
       const { annotations, mcp } = operation;
       const structured = mcp?.structured !== false;
-      const meta = { ...(annotations.asks ? { [ASKS_META_KEY]: true } : {}), ...mcp?.meta };
+      const binding = bound.get(`${app.name}.${opName}`);
+      const ui = {
+        ...(binding ? { resourceUri: viewUri(binding.view) } : {}),
+        ...(views && !isVisible(operation, "model") ? { visibility: ["app"] } : {}),
+        ...(views && !isVisible(operation, "app") ? { visibility: ["model"] } : {}),
+      };
+      const meta = {
+        ...(annotations.asks ? { [ASKS_META_KEY]: true } : {}),
+        ...(Object.keys(ui).length ? { ui } : {}),
+        ...mcp?.meta,
+      };
       server.registerTool(
         toolName(app, opName, operation, scope),
         {
@@ -274,13 +454,30 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
         },
         async (args, ctx) => {
           try {
-            const call = callOptions(ctx, caller, options, clientCanAsk(ctx, server, serving));
+            const surface = surfaceOf(ctx, operation);
+            const inline = asksInline(ctx, surface);
+            // A view that asks inline can always ask, whatever the client declares.
+            const call = callOptions(ctx, caller, options, inline || clientCanAsk(ctx, server, serving), surface);
+            const resume = inline ? inlineResume(ctx) : undefined;
+            if (resume) call.resume = resume;
             const result = await registry.invoke(app.name, opName, args, call);
-            if (result.resultType === "input_required") return askClient(result, era, connected);
+            if (result.resultType === "input_required") {
+              return inline ? inlineQuestions(result) : askClient(result, era, connected);
+            }
             const content = mcp?.content
               ? [...mcp.content(result.data)]
               : [{ type: "text" as const, text: JSON.stringify(result.data) }];
-            return structured ? { content, structuredContent: result.data as Record<string, unknown> } : { content };
+            const viewMeta: ViewResultMeta | undefined = binding && {
+              view: viewId(binding.view),
+              op: opName,
+              ...(binding.component ? { component: binding.component } : {}),
+              schemaVersion: await fingerprint(operation),
+            };
+            return {
+              content,
+              ...(structured ? { structuredContent: result.data as Record<string, unknown> } : {}),
+              ...(viewMeta ? { _meta: { [VIEW_META_KEY]: viewMeta } } : {}),
+            };
           } catch (error) {
             return toolError(asSyrinx(error, logger));
           }
@@ -307,6 +504,33 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
       } else {
         server.registerResource(name, new ResourceTemplate(res.uri, { list: undefined }), metadata, read);
       }
+    }
+
+    for (const v of views ? Object.values(app.views) : []) {
+      const uri = viewUri(v);
+      const uiMeta = (csp: ViewCsp | undefined) => {
+        const merged = mergeCsp(v.csp, csp);
+        return { ui: { ...(merged ? { csp: merged } : {}), ...(v.prefersBorder ? { prefersBorder: true } : {}) } };
+      };
+      server.registerResource(
+        memberName(app, `view-${v.name}`, scope),
+        uri,
+        {
+          ...(v.title ? { title: v.title } : {}),
+          ...(v.description ? { description: v.description } : {}),
+          mimeType: VIEW_MIME_TYPE,
+          _meta: uiMeta(undefined),
+        },
+        async () => {
+          try {
+            const shell = await views?.render(v, await viewBoot(registry, v, scope));
+            if (!shell) throw new SyrinxError("internal", `No shell for view ${viewId(v)}.`);
+            return { contents: [{ uri, mimeType: VIEW_MIME_TYPE, text: shell.html, _meta: uiMeta(shell.csp) }] };
+          } catch (error) {
+            throw protocolError(asSyrinx(error, logger), uri);
+          }
+        },
+      );
     }
 
     for (const [promptName, p] of Object.entries(app.prompts)) {

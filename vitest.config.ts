@@ -11,6 +11,10 @@ export default defineConfig({
       "@syrinx/mcp": src("mcp"),
       "@syrinx/rest": src("rest"),
       "@syrinx/testing": src("testing"),
+      "@syrinx/ui/server": fileURLToPath(new URL("./packages/ui/src/server.ts", import.meta.url)),
+      "@syrinx/ui-vue": src("ui-vue"),
+      "@syrinx/ui": src("ui"),
+      "@syrinx/vite": src("vite"),
     },
   },
   test: {

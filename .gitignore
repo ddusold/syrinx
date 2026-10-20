@@ -4,3 +4,5 @@ coverage/
 *.log
 .DS_Store
 examples/*/openapi.json
+test-results/
+playwright-report/
