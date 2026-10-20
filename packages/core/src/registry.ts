@@ -1,4 +1,13 @@
-import { templateVariables, type App, type Operation, type Permissions, type Resource } from "./app.js";
+import {
+  templateVariables,
+  type App,
+  type Completer,
+  type Operation,
+  type Permissions,
+  type Prompt,
+  type Resource,
+} from "./app.js";
+import { toMessages, type RenderedPrompt } from "./content.js";
 import {
   anonymous,
   noopLogger,
@@ -37,6 +46,8 @@ export interface InvokeOptions<Deps = unknown> {
   idempotencyKey?: string;
   /** Answers to an earlier `input_required` result. */
   resume?: Resume;
+  /** False when the caller cannot answer questions, so ctx.confirm / ctx.ask resolve as declined. Defaults to true. */
+  canAsk?: boolean;
   signal?: AbortSignal;
   logger?: Logger;
   tracer?: Tracer;
@@ -71,20 +82,61 @@ export interface RegistryOptions {
   /** Receives one record per write (non-read-only operation), whatever the outcome. */
   audit?: (record: AuditRecord) => void | Promise<void>;
   /** Tenant enablement. Disabled apps, operations and resources are reported as not found. */
-  isEnabled?: (
-    target: { app: string; operation?: string; resource?: string },
-    tenant: Tenant | undefined,
-  ) => boolean | Promise<boolean>;
+  isEnabled?: (target: Target, tenant: Tenant | undefined) => boolean | Promise<boolean>;
+}
+
+/** One member of an app, as tenant enablement and listing see it. */
+export interface Target {
+  app: string;
+  operation?: string;
+  resource?: string;
+  prompt?: string;
 }
 
 export type InvokeResult = { resultType: "complete"; data: unknown; replayed?: true } | InputRequired;
+
+export type RenderResult = { resultType: "complete"; data: RenderedPrompt } | InputRequired;
+
+/** A suggestion request for one prompt argument or resource template variable, as MCP's completion/complete. */
+export interface CompletionRequest {
+  app: string;
+  prompt?: string;
+  resource?: string;
+  argument: string;
+  value: string;
+  /** Arguments already filled in, for completers that depend on them. */
+  arguments?: Record<string, string>;
+}
+
+/** At most this many suggestions are returned, as MCP allows. */
+const MAX_COMPLETIONS = 100;
 
 export interface Registry {
   readonly apps: ReadonlyMap<string, App>;
   get(app: string, operation: string): Operation | undefined;
   getResource(app: string, resource: string): Resource | undefined;
+  getPrompt(app: string, prompt: string): Prompt | undefined;
+  /**
+   * Whether a caller would see this member in a listing: enabled for the tenant and, when it declares scopes, held
+   * by the principal. Predicates need input, so they are checked only when the member is called.
+   */
+  allows(target: Target, options?: Pick<InvokeOptions, "principal" | "tenant">): Promise<boolean>;
+  /** True when listings can differ between callers (scopes or tenant enablement), so they must not be shared. */
+  readonly personalized: boolean;
   invoke(app: string, operation: string, input: unknown, options?: InvokeOptions): Promise<InvokeResult>;
   read(app: string, resource: string, params: Record<string, unknown>, options?: InvokeOptions): Promise<unknown>;
+  /** Renders a prompt. Prompts that declare `asks` may answer `input_required`, resumed like operations. */
+  render(app: string, prompt: string, args: unknown, options?: InvokeOptions): Promise<RenderResult>;
+  /** Suggestions for a prompt argument or resource template variable; empty when the member has no completer. */
+  complete(
+    request: CompletionRequest,
+    options?: InvokeOptions,
+  ): Promise<{ values: string[]; total: number; hasMore: boolean }>;
+  /**
+   * Rejects a `requestState` this registry did not mint, or that has expired, with a validation error. Calls still
+   * check it fully (binding included); this lets a surface refuse forged state before dispatching anything.
+   */
+  checkRequestState(requestState: string): Promise<void>;
 }
 
 export function isVisible(operation: Operation, surface: Surface): boolean {
@@ -114,11 +166,12 @@ const isAnonymous = (principal: Principal) => principal === anonymous || princip
 const denied = (principal: Principal, what: string) =>
   isAnonymous(principal) ? errors.unauthenticated(`${what} requires authentication.`) : errors.forbidden();
 
+const holdsScopes = (permissions: Permissions<never> | undefined, principal: Principal) =>
+  !permissions || typeof permissions === "function" || permissions.every((s) => principal.scopes.includes(s));
+
 /** Scopes are checked before validation; predicates need the validated input, so they run after it. */
 function checkScopes(permissions: Permissions<never> | undefined, principal: Principal, what: string) {
-  if (permissions && typeof permissions !== "function" && !permissions.every((s) => principal.scopes.includes(s))) {
-    throw denied(principal, what);
-  }
+  if (!holdsScopes(permissions, principal)) throw denied(principal, what);
 }
 
 async function checkPredicate<I>(
@@ -141,13 +194,17 @@ const refuseAsking = (message: string): Asker => ({
 
 async function perform(operation: Operation, input: unknown, ctx: Context): Promise<unknown> {
   const question = await operation.confirm?.(input, ctx);
-  if (question !== undefined && !(await ctx.confirm(question))) throw errors.cancelled("Declined by the caller.");
+  if (question !== undefined && !(await ctx.confirm(question))) {
+    throw errors.cancelled(
+      ctx.canAsk ? "Declined by the caller." : "This needs the user's confirmation, but the client cannot ask for it.",
+    );
+  }
   return operation.handler(input, ctx);
 }
 
 /** Builds the context, wraps the call in a span, and validates output. Returns a signal instead when input is needed. */
 async function run(
-  target: { kind: "operation" | "resource"; app: string; name: string; output: StandardSchemaV1 },
+  target: { kind: "operation" | "resource" | "prompt"; app: string; name: string; output?: StandardSchemaV1 },
   options: InvokeOptions & { requestId: string },
   asker: Asker,
   call: (ctx: Context) => unknown,
@@ -184,11 +241,12 @@ async function run(
       tenant: options.tenant,
       requestId: options.requestId,
       idempotencyKey: options.idempotencyKey,
+      canAsk: options.canAsk ?? true,
       signal: options.signal ?? new AbortController().signal,
       log,
       span,
-      confirm: (message) => ask(() => asker.confirm(message)),
-      ask: (message, schema) => ask(() => asker.ask(message, schema)),
+      confirm: (message, opts) => ask(() => asker.confirm(message, opts)),
+      ask: (message, schema, opts) => ask(() => asker.ask(message, schema, opts)),
       errors,
     });
     if (pending) {
@@ -196,6 +254,7 @@ async function run(
       log.warn("handler swallowed an input request; asking anyway");
       return { signal: pending };
     }
+    if (!target.output) return { value: result };
     // Output is validated too: a handler that breaks its declared contract is a server bug, not a client error.
     const checked = await target.output["~standard"].validate(result);
     if (checked.issues) {
@@ -229,6 +288,23 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
 
   const get = (app: string, operation: string) => own(byName.get(app)?.operations, operation);
   const getResource = (app: string, resource: string) => own(byName.get(app)?.resources, resource);
+  const getPrompt = (app: string, name: string) => own(byName.get(app)?.prompts, name);
+  const member = (target: Target) =>
+    target.operation !== undefined
+      ? get(target.app, target.operation)
+      : target.resource !== undefined
+        ? getResource(target.app, target.resource)
+        : target.prompt !== undefined
+          ? getPrompt(target.app, target.prompt)
+          : undefined;
+  const scoped = (permissions: Permissions<never> | undefined) => Array.isArray(permissions) && permissions.length > 0;
+  const personalized =
+    registryOptions.isEnabled !== undefined ||
+    [...byName.values()].some((app) =>
+      [...Object.values(app.operations), ...Object.values(app.resources), ...Object.values(app.prompts)].some((m) =>
+        scoped(m.permissions),
+      ),
+    );
 
   let codec: RequestStateCodec | undefined;
   const requestStates = (what: string) => {
@@ -237,11 +313,10 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
     return (codec ??= createRequestStateCodec(key, registryOptions.requestStateTtlSeconds));
   };
 
-  const ensureEnabled = async (target: { app: string; operation?: string; resource?: string }, tenant?: Tenant) => {
+  const ensureEnabled = async (target: Target, tenant?: Tenant) => {
     if (registryOptions.isEnabled && !(await registryOptions.isEnabled(target, tenant))) {
-      throw errors.notFound(
-        `Unknown ${target.operation ? "operation" : "resource"} "${target.app}.${target.operation ?? target.resource}".`,
-      );
+      const kind = target.operation ? "operation" : target.resource ? "resource" : "prompt";
+      throw errors.notFound(`Unknown ${kind} "${target.app}.${target.operation ?? target.resource ?? target.prompt}".`);
     }
   };
 
@@ -296,7 +371,7 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
         { kind: "operation", app: appName, name: opName, output: operation.output },
         options,
         operation.annotations.asks
-          ? createAsker(answers)
+          ? createAsker(answers, options.canAsk ?? true)
           : refuseAsking(`${what} asks for input but does not declare annotations.asks.`),
         (ctx) => perform(operation, parsed.value, ctx),
       );
@@ -330,6 +405,15 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
     apps: byName,
     get,
     getResource,
+    getPrompt,
+    personalized,
+
+    async allows(target, options = {}) {
+      const found = member(target);
+      if (!found) return false;
+      if (registryOptions.isEnabled && !(await registryOptions.isEnabled(target, options.tenant))) return false;
+      return holdsScopes(found.permissions, options.principal ?? anonymous);
+    },
 
     async invoke(appName, opName, rawInput, invokeOptions = {}) {
       const operation = get(appName, opName);
@@ -405,6 +489,87 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
       );
       if ("signal" in outcome) throw new SyrinxError("internal", "Resources cannot ask for input.");
       return outcome.value;
+    },
+
+    checkRequestState: (requestState) => requestStates("A resumed call").check(requestState),
+
+    async render(appName, promptName, rawArgs, invokeOptions = {}) {
+      const p = getPrompt(appName, promptName);
+      if (!p) throw errors.notFound(`Unknown prompt "${appName}.${promptName}".`);
+      const options = { ...invokeOptions, requestId: invokeOptions.requestId ?? crypto.randomUUID() };
+      const principal = options.principal ?? anonymous;
+      const what = `${appName}.${promptName}`;
+      await ensureEnabled({ app: appName, prompt: promptName }, options.tenant);
+      checkScopes(p.permissions, principal, what);
+
+      let args: unknown = {};
+      if (p.args) {
+        const parsed = await p.args["~standard"].validate(rawArgs ?? {});
+        if (parsed.issues) throw errors.validation("Prompt arguments failed validation.", toFieldIssues(parsed.issues));
+        args = parsed.value;
+      }
+      await checkPredicate(p.permissions, principal, args, what);
+
+      // Prompt state is bound under its own namespace, so it can never resume an operation of the same name.
+      const binding: Binding = {
+        app: appName,
+        operation: `prompt:${promptName}`,
+        principal: principal.id,
+        tenant: options.tenant?.id,
+        inputHash: await sha256(canonicalJson(rawArgs ?? {})),
+      };
+      const { interactionId, answers } = options.resume
+        ? await requestStates(what).open(binding, options.resume)
+        : { interactionId: crypto.randomUUID(), answers: [] };
+      const outcome = await run(
+        { kind: "prompt", app: appName, name: promptName },
+        options,
+        p.asks
+          ? createAsker(answers, options.canAsk ?? true)
+          : refuseAsking(`${what} asks for input but does not declare asks.`),
+        (ctx) => p.render(args, ctx),
+      );
+      if ("signal" in outcome) {
+        const requestState = await requestStates(what).mint(binding, interactionId, answers, {
+          key: outcome.signal.key,
+          message: outcome.signal.request.message,
+        });
+        return {
+          resultType: "input_required",
+          inputRequests: { [outcome.signal.key]: outcome.signal.request },
+          requestState,
+        };
+      }
+      const messages = toMessages(outcome.value as Parameters<typeof toMessages>[0]);
+      return { resultType: "complete", data: { description: p.description, messages } };
+    },
+
+    async complete(request, invokeOptions = {}) {
+      const { app: appName, argument } = request;
+      const found =
+        request.prompt !== undefined
+          ? getPrompt(appName, request.prompt)
+          : getResource(appName, request.resource ?? "");
+      const name = request.prompt ?? request.resource ?? "";
+      if (!found)
+        throw errors.notFound(`Unknown ${request.prompt !== undefined ? "prompt" : "resource"} "${appName}.${name}".`);
+      const options = { ...invokeOptions, requestId: invokeOptions.requestId ?? crypto.randomUUID() };
+      const target: Target =
+        request.prompt !== undefined ? { app: appName, prompt: name } : { app: appName, resource: name };
+      await ensureEnabled(target, options.tenant);
+      // Suggestions can leak data, so they need the same scopes as the member itself.
+      checkScopes(found.permissions, options.principal ?? anonymous, `${appName}.${name}`);
+      const completer = (found.complete as Record<string, Completer | undefined> | undefined)?.[argument];
+      if (!completer) return { values: [], total: 0, hasMore: false };
+      const outcome = await run(
+        { kind: request.prompt !== undefined ? "prompt" : "resource", app: appName, name },
+        options,
+        refuseAsking("Completions cannot ask for input."),
+        (ctx) => completer(request.value, { arguments: request.arguments ?? {} }, ctx),
+      );
+      if ("signal" in outcome) throw new SyrinxError("internal", "Completions cannot ask for input.");
+      const all = [...(outcome.value as readonly string[])];
+      return { values: all.slice(0, MAX_COMPLETIONS), total: all.length, hasMore: all.length > MAX_COMPLETIONS };
     },
   };
 }

@@ -73,6 +73,52 @@ const sharedSchemas: Record<string, JsonSchema> = {
     },
     required: ["action"],
   },
+  ContentBlock: {
+    oneOf: [
+      {
+        type: "object",
+        properties: { type: { const: "text" }, text: { type: "string" } },
+        required: ["type", "text"],
+      },
+      {
+        type: "object",
+        properties: { type: { enum: ["image", "audio"] }, data: { type: "string" }, mimeType: { type: "string" } },
+        required: ["type", "data", "mimeType"],
+      },
+      {
+        type: "object",
+        properties: {
+          type: { const: "resource" },
+          resource: {
+            type: "object",
+            properties: {
+              uri: { type: "string" },
+              mimeType: { type: "string" },
+              text: { type: "string" },
+              blob: { type: "string" },
+            },
+            required: ["uri"],
+          },
+        },
+        required: ["type", "resource"],
+      },
+    ],
+  },
+  RenderedPrompt: {
+    type: "object",
+    properties: {
+      description: { type: "string" },
+      messages: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { role: { enum: ["user", "assistant"] }, content: ref("ContentBlock") },
+          required: ["role", "content"],
+        },
+      },
+    },
+    required: ["description", "messages"],
+  },
   InputRequired: {
     type: "object",
     description: "The operation needs answers. POST them to the operation's /resume path with the echoed requestState.",
@@ -231,6 +277,97 @@ function appPaths(app: App, components: Record<string, JsonSchema>) {
         })),
         responses: {
           "200": { description: "The resource.", content: json(complete(output)) },
+          default: problemResponse,
+        },
+      },
+    };
+  }
+  for (const [name, p] of Object.entries(app.prompts)) {
+    const args = p.args
+      ? place(toJsonSchema(p.args, "input"), `${pascal(app.name)}${pascal(name)}PromptArgs`, components)
+      : { type: "object" };
+    const responses = {
+      "200": p.asks
+        ? {
+            description: "The rendered prompt, or the questions it needs answered first.",
+            content: json({ oneOf: [complete(ref("RenderedPrompt")), ref("InputRequired")] }),
+          }
+        : { description: "The rendered prompt.", content: json(complete(ref("RenderedPrompt"))) },
+      default: problemResponse,
+    };
+    const path = `/api/${app.name}/prompts/${name}`;
+    paths[path] = {
+      post: {
+        operationId: `${app.name}_${name}_prompt`,
+        summary: p.description,
+        description: `${p.description} Renders the prompt's messages; the body holds its string arguments.`,
+        tags,
+        requestBody: { required: !!p.args, content: json(args) },
+        responses,
+      },
+    };
+    if (p.asks) {
+      paths[`${path}/resume`] = {
+        post: {
+          operationId: `${app.name}_${name}_prompt_resume`,
+          summary: `Answer the questions from an input_required result of prompt ${app.name}.${name}.`,
+          description: "Re-sends the original arguments with the echoed requestState and one response per question.",
+          tags,
+          requestBody: {
+            required: true,
+            content: json({
+              type: "object",
+              properties: {
+                input: args,
+                requestState: { type: "string" },
+                inputResponses: { type: "object", additionalProperties: ref("InputResponse") },
+              },
+              required: ["input", "requestState", "inputResponses"],
+            }),
+          },
+          responses,
+        },
+      };
+    }
+  }
+
+  const completable = [...Object.values(app.prompts), ...Object.values(app.resources)].some((m) => m.complete);
+  if (completable) {
+    paths[`/api/${app.name}/complete`] = {
+      post: {
+        operationId: `${app.name}_complete`,
+        summary: `Suggest values for a prompt argument or resource template variable in ${app.name}.`,
+        description: "Name exactly one of prompt or resource. Members without a completer return no suggestions.",
+        tags,
+        requestBody: {
+          required: true,
+          content: json({
+            type: "object",
+            properties: {
+              prompt: { type: "string" },
+              resource: { type: "string" },
+              argument: { type: "string" },
+              value: { type: "string" },
+              arguments: { type: "object", additionalProperties: { type: "string" } },
+            },
+            required: ["argument"],
+          }),
+        },
+        responses: {
+          "200": {
+            description: "Up to 100 suggestions.",
+            content: json(
+              complete({
+                type: "object",
+                properties: {
+                  values: { type: "array", items: { type: "string" }, maxItems: 100 },
+                  total: { type: "integer" },
+                  hasMore: { type: "boolean" },
+                },
+                required: ["values", "total", "hasMore"],
+              }),
+            ),
+          },
           default: problemResponse,
         },
       },

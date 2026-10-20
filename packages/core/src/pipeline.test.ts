@@ -265,13 +265,14 @@ describe("input round trips", () => {
     ).rejects.toMatchObject({ kind: "validation", issues: [{ path: "reason" }] });
   });
 
-  it("rejects request state that was tampered with, reused for other input, or answered with the wrong key", async () => {
+  it("rejects request state that was tampered with or reused for other input, and re-asks unanswered questions", async () => {
     const r = registry();
     const { requestState } = inputRequired(await voidCall(r));
     const accept = { "input-0": { action: "accept" } };
     await expect(voidCall(r, { requestState: `${requestState}x`, inputResponses: accept })).rejects.toMatchObject({
       kind: "validation",
       message: /not valid/,
+      issues: [{ path: "requestState" }],
     });
     await expect(
       r.invoke("invoices", "void", { id: "other" }, { resume: { requestState, inputResponses: accept } }),
@@ -284,9 +285,10 @@ describe("input round trips", () => {
         { principal: writer, resume: { requestState, inputResponses: accept } },
       ),
     ).rejects.toMatchObject({ message: /different call/ });
-    await expect(
-      voidCall(r, { requestState, inputResponses: { "input-9": { action: "accept" } } }),
-    ).rejects.toMatchObject({ message: /input response "input-0"/ });
+    const again = inputRequired(
+      await voidCall(r, { requestState, inputResponses: { "input-9": { action: "accept" } } }),
+    );
+    expect(again.inputRequests).toEqual({ "input-0": { kind: "confirm", message: "Void invoice inv_1?" } });
   });
 
   it("rejects expired request state", async () => {

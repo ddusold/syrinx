@@ -69,3 +69,26 @@ jobs:
           deno-version: v2.x
       - if: matrix.runtime == 'deno'
         run: deno run --allow-read --allow-env scripts/smoke.mjs
+
+  conformance:
+    name: MCP conformance (2026-07-28 requirements)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Start the conformance fixtures
+        run: |
+          pnpm --filter @syrinx/example-conformance start &
+          for i in $(seq 1 60); do
+            curl -s -o /dev/null -X POST http://localhost:3001/mcp/conformance && exit 0
+            sleep 1
+          done
+          echo "fixture server did not start" && exit 1
+      # Fails on any failure outside examples/conformance/expected-failures.yaml, and on baseline entries that pass.
+      - run: pnpm conformance

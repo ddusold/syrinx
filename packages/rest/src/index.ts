@@ -8,7 +8,9 @@ import {
   type Logger,
   type Principal,
   type Registry,
+  type RenderResult,
   type Resume,
+  type Target,
   type Tenant,
   type Tracer,
 } from "@syrinx/core";
@@ -117,9 +119,13 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
     return call;
   };
 
-  const envelope = (c: Context, call: Call, result: InvokeResult) =>
+  const envelope = (c: Context, call: Call, result: InvokeResult | RenderResult) =>
     result.resultType === "complete"
-      ? c.json({ resultType: "complete", data: result.data, meta: meta(call, result.replayed) })
+      ? c.json({
+          resultType: "complete",
+          data: result.data,
+          meta: meta(call, "replayed" in result ? result.replayed : undefined),
+        })
       : c.json({ ...result, meta: meta(call) });
 
   const invoke = async (c: Context, input: unknown, resume?: Resume) => {
@@ -145,33 +151,52 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
     }),
   );
 
-  app.get("/api/:app", (c) => {
+  // The manifest lists what this caller may use, as MCP lists do; OpenAPI stays the full contract.
+  app.get("/api/:app", async (c) => {
     const found = findApp(c.req.param("app"));
+    const call = await callOptions(c);
+    const allowed = async <T>(entries: [string, T][], target: (name: string) => Target) => {
+      const keep = await Promise.all(entries.map(([name]) => registry.allows(target(name), call)));
+      return entries.filter((_, i) => keep[i]);
+    };
+    const operations = await allowed(
+      Object.entries(found.operations).filter(([, o]) => isVisible(o, "rest")),
+      (operation) => ({ app: found.name, operation }),
+    );
+    const resources = await allowed(Object.entries(found.resources), (resource) => ({ app: found.name, resource }));
+    const prompts = await allowed(Object.entries(found.prompts), (prompt) => ({ app: found.name, prompt }));
+    if (registry.personalized) c.header("cache-control", "private");
     return c.json({
       name: found.name,
       version: found.version,
       description: found.description,
       openapi: `/api/${found.name}/openapi.json`,
-      operations: Object.entries(found.operations)
-        .filter(([, o]) => isVisible(o, "rest"))
-        .map(([name, o]) => ({
-          name,
-          description: o.description,
-          annotations: o.annotations,
-          inputSchema: toJsonSchema(o.input, "input"),
-          outputSchema: toJsonSchema(o.output, "output"),
-          href: `/api/${found.name}/ops/${name}`,
-        })),
-      resources: Object.entries(found.resources).map(([name, r]) => {
+      operations: operations.map(([name, o]) => ({
+        name,
+        description: o.description,
+        annotations: o.annotations,
+        inputSchema: toJsonSchema(o.input, "input"),
+        outputSchema: toJsonSchema(o.output, "output"),
+        href: `/api/${found.name}/ops/${name}`,
+      })),
+      resources: resources.map(([name, r]) => {
         const href = resourcePath(found.name, r.uri);
         return {
           name,
           uri: r.uri,
           ...(r.description ? { description: r.description } : {}),
+          ...(r.mimeType ? { mimeType: r.mimeType } : {}),
           outputSchema: toJsonSchema(r.output, "output"),
           ...(href ? { href } : {}),
         };
       }),
+      prompts: prompts.map(([name, p]) => ({
+        name,
+        ...(p.title ? { title: p.title } : {}),
+        description: p.description,
+        ...(p.args ? { argsSchema: toJsonSchema(p.args, "input") } : {}),
+        href: `/api/${found.name}/prompts/${name}`,
+      })),
     });
   });
 
@@ -195,6 +220,44 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
     }
     if (!operation.annotations.readOnly) return c.body(null, 405, { allow: "POST" });
     return invoke(c, inputFromQuery(new URL(c.req.url), toJsonSchema(operation.input, "input")));
+  });
+
+  // Prompts render to messages; the body holds their string arguments. Prompts that ask resume like operations.
+  const render = async (c: Context, args: unknown, resume?: Resume) => {
+    const call = await callOptions(c);
+    if (resume) call.resume = resume;
+    const { app: appName, prompt } = c.req.param() as { app: string; prompt: string };
+    return envelope(c, call, await registry.render(appName, prompt, args, call));
+  };
+  app.post("/api/:app/prompts/:prompt", async (c) => render(c, await readJson(c)));
+  app.post("/api/:app/prompts/:prompt/resume", async (c) => {
+    const { input, resume } = parseResume(await readJson(c));
+    return render(c, input, resume);
+  });
+
+  // Suggestions for a prompt argument or resource template variable, as MCP's completion/complete.
+  app.post("/api/:app/complete", async (c) => {
+    const body = (await readJson(c)) as Record<string, unknown>;
+    const text = (key: string) => (typeof body[key] === "string" ? body[key] : undefined);
+    const prompt = text("prompt");
+    const resource = text("resource");
+    const argument = text("argument");
+    if ((prompt === undefined) === (resource === undefined) || argument === undefined) {
+      throw new SyrinxError("validation", "A completion body needs argument and exactly one of prompt or resource.");
+    }
+    const args = body.arguments && typeof body.arguments === "object" ? (body.arguments as Record<string, string>) : {};
+    const call = await callOptions(c);
+    const completion = await registry.complete(
+      {
+        app: c.req.param("app"),
+        argument,
+        value: text("value") ?? "",
+        arguments: args,
+        ...(prompt !== undefined ? { prompt } : { resource: resource ?? "" }),
+      },
+      call,
+    );
+    return c.json({ resultType: "complete", data: completion, meta: meta(call) });
   });
 
   // Resources are addressed by their URI: invoice://inv_1 is GET /api/invoices/resources/invoice/inv_1.

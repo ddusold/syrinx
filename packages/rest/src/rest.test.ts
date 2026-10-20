@@ -1,4 +1,4 @@
-import { createMemoryIdempotencyStore, createRegistry, defineApp, errors, op, resource } from "@syrinx/core";
+import { createMemoryIdempotencyStore, createRegistry, defineApp, errors, op, prompt, resource } from "@syrinx/core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createRestApp } from "./index.js";
@@ -74,7 +74,19 @@ const invoices = defineApp({
     line: resource({
       uri: "invoice://{id}/lines/{line}",
       output: z.object({ id: z.string(), line: z.string() }),
+      complete: { line: (value) => ["1", "2", "10"].filter((l) => l.startsWith(value)) },
       read: (params) => params,
+    }),
+  },
+  prompts: {
+    remind: prompt({
+      description: "Draft a reminder after asking which tone to use.",
+      args: z.object({ id: z.string().describe("Invoice id.") }),
+      asks: true,
+      render: async ({ id }, ctx) => {
+        const answer = await ctx.ask("Which tone?", z.object({ tone: z.string() }), { key: "tone" });
+        return `Remind about ${id} in a ${answer?.tone ?? "neutral"} tone.`;
+      },
     }),
   },
 });
@@ -115,7 +127,13 @@ describe("catalog and manifests", () => {
       operations: { name: string }[];
       resources: { name: string; href?: string }[];
     }>(await app.request("/api/invoices"));
-    expect(manifest.operations.map((o) => o.name)).toEqual(["get", "search", "send", "void", "whoami"]);
+    // Anonymous callers do not see whoami, which needs me:read; the signed-in caller does, in a private response.
+    expect(manifest.operations.map((o) => o.name)).toEqual(["get", "search", "send", "void"]);
+    const signedIn = await app.request("/api/invoices", { headers: { authorization: "Bearer good" } });
+    expect(signedIn.headers.get("cache-control")).toBe("private");
+    expect((await json<{ operations: { name: string }[] }>(signedIn)).operations.map((o) => o.name)).toContain(
+      "whoami",
+    );
     expect(manifest.operations[0]).toMatchObject({
       inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
       outputSchema: { properties: { status: { enum: ["draft", "sent"] } } },
@@ -269,5 +287,29 @@ describe("OpenAPI", () => {
     expect(Object.keys(doc.paths)).not.toContain("/api/invoices/ops/get/resume");
     expect(Object.keys(doc.paths)).not.toContain("/api/invoices/ops/preview");
     expect((await app.request("/api/invoices/openapi.json")).status).toBe(200);
+  });
+});
+
+describe("prompts and completion", () => {
+  it("renders prompts that ask, resuming with the answer", async () => {
+    const asked = await json<{ resultType: string; requestState: string; inputRequests: unknown }>(
+      await post("/api/invoices/prompts/remind", { id: "inv_1" }),
+    );
+    expect(asked).toMatchObject({ resultType: "input_required", inputRequests: { tone: { kind: "ask" } } });
+    const done = await post("/api/invoices/prompts/remind/resume", {
+      input: { id: "inv_1" },
+      requestState: asked.requestState,
+      inputResponses: { tone: { action: "accept", content: { tone: "warm" } } },
+    });
+    expect(await json(done)).toMatchObject({
+      resultType: "complete",
+      data: { messages: [{ role: "user", content: { type: "text", text: "Remind about inv_1 in a warm tone." } }] },
+    });
+  });
+
+  it("suggests resource template variables", async () => {
+    const res = await post("/api/invoices/complete", { resource: "line", argument: "line", value: "1" });
+    expect(await json(res)).toMatchObject({ data: { values: ["1", "10"], total: 2, hasMore: false } });
+    expect((await post("/api/invoices/complete", { argument: "line" })).status).toBe(400);
   });
 });

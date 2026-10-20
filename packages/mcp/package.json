@@ -1,0 +1,32 @@
+{
+  "name": "@syrinx/mcp",
+  "version": "0.0.0",
+  "description": "MCP surface for Syrinx apps, built on the official TypeScript SDK v2.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./stdio": {
+      "types": "./dist/stdio.d.ts",
+      "import": "./dist/stdio.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/stdio.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
+    "@syrinx/core": "workspace:^"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "zod": "^4.6.7"
+  }
+}

@@ -19,6 +19,11 @@ export interface InputRequired {
   requestState: string;
 }
 
+export interface AskOptions {
+  /** The question's key in `inputRequests` and `inputResponses`. Defaults to `input-{n}`, by position. */
+  key?: string;
+}
+
 /** Answers to a previous `input_required` result, sent with the retried call. */
 export interface Resume {
   requestState: string;
@@ -62,8 +67,13 @@ export class InputRequiredSignal extends Error {
 
 export interface RequestStateCodec {
   mint(binding: Binding, interactionId: string, answers: Answer[], pending: StatePayload["pending"]): Promise<string>;
-  /** The answers so far, including the response to the pending question. Throws a validation error on any mismatch. */
+  /**
+   * The answers so far, including the response to the pending question when the caller sent one; without it the
+   * question is asked again. Throws a validation error, with an issue on `requestState`, when the state is invalid.
+   */
   open(binding: Binding, resume: Resume): Promise<{ interactionId: string; answers: Answer[] }>;
+  /** Integrity and expiry only, for surfaces that must reject forged state before dispatching the call. */
+  check(requestState: string): Promise<void>;
 }
 
 /**
@@ -74,7 +84,16 @@ export function createRequestStateCodec(secrets: Secret | readonly Secret[], ttl
   const list = typeof secrets === "string" || secrets instanceof Uint8Array ? [secrets] : secrets;
   if (list.length === 0) throw new RangeError("requestStateKey needs at least one key.");
   const keys = Promise.all(list.map(sealingKey));
-  const invalid = (why: string) => errors.validation(`requestState ${why}; start the call again without it.`);
+  const invalid = (why: string) =>
+    errors.validation(`requestState ${why}; start the call again without it.`, [
+      { path: "requestState", message: why },
+    ]);
+  const readPayload = async (token: string) => {
+    const payload = (await unseal(await keys, token)) as StatePayload | undefined;
+    if (payload?.v !== 1) throw invalid("is not valid");
+    if (payload.exp < Date.now()) throw invalid("has expired");
+    return payload;
+  };
 
   return {
     async mint(binding, interactionId, answers, pending) {
@@ -85,10 +104,12 @@ export function createRequestStateCodec(secrets: Secret | readonly Secret[], ttl
       return seal(current, payload);
     },
 
+    async check(requestState) {
+      await readPayload(requestState);
+    },
+
     async open(binding, resume) {
-      const payload = (await unseal(await keys, resume.requestState)) as StatePayload | undefined;
-      if (payload?.v !== 1) throw invalid("is not valid");
-      if (payload.exp < Date.now()) throw invalid("has expired");
+      const payload = await readPayload(resume.requestState);
       const b = payload.binding;
       if (
         b.app !== binding.app ||
@@ -100,7 +121,8 @@ export function createRequestStateCodec(secrets: Secret | readonly Secret[], ttl
         throw invalid("belongs to a different call");
       }
       const response = parseResponse(resume.inputResponses[payload.pending.key]);
-      if (!response) throw errors.validation(`Missing or malformed input response "${payload.pending.key}".`);
+      // A missing or malformed answer is not fatal: the replay reaches the same question and asks it again.
+      if (!response) return { interactionId: payload.interactionId, answers: [...payload.answers] };
       return {
         interactionId: payload.interactionId,
         answers: [...payload.answers, { message: payload.pending.message, response }],
@@ -121,26 +143,32 @@ function parseResponse(value: unknown): InputResponse | undefined {
 
 /**
  * Replays recorded answers in call order. The handler re-runs from the top on every round, so the n-th ask returns
- * the n-th answer; a question that changed since it was answered is asked again.
+ * the n-th answer; a question that changed since it was answered is asked again. When the caller cannot answer
+ * questions at all (`canAsk` false), every question is treated as declined, the safe default for confirmations.
  */
-export function createAsker(answers: Answer[]) {
+export function createAsker(answers: Answer[], canAsk = true) {
   let index = 0;
 
-  const next = (request: InputRequest): InputResponse => {
+  const next = (request: InputRequest, key: string | undefined): InputResponse => {
+    if (!canAsk) return { action: "decline" };
     const i = index++;
     const recorded = answers[i];
     if (recorded?.message === request.message) return recorded.response;
     answers.length = i; // drop this answer and every later one
-    throw new InputRequiredSignal(`input-${i}`, request);
+    throw new InputRequiredSignal(key ?? `input-${i}`, request);
   };
 
   return {
     answers,
-    confirm(message: string): Promise<boolean> {
-      return Promise.resolve(next({ kind: "confirm", message }).action === "accept");
+    confirm(message: string, options?: AskOptions): Promise<boolean> {
+      return Promise.resolve(next({ kind: "confirm", message }, options?.key).action === "accept");
     },
-    async ask<S extends Schema>(message: string, schema: S): Promise<StandardSchemaV1.InferOutput<S> | undefined> {
-      const response = next({ kind: "ask", message, schema: toJsonSchema(schema, "input") });
+    async ask<S extends Schema>(
+      message: string,
+      schema: S,
+      options?: AskOptions,
+    ): Promise<StandardSchemaV1.InferOutput<S> | undefined> {
+      const response = next({ kind: "ask", message, schema: toJsonSchema(schema, "input") }, options?.key);
       if (response.action !== "accept") return undefined;
       const parsed = await schema["~standard"].validate(response.content ?? {});
       if (parsed.issues) throw errors.validation("Input response failed validation.", toFieldIssues(parsed.issues));

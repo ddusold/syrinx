@@ -6,6 +6,7 @@ import {
   type Logger,
   type Principal,
 } from "@syrinx/core";
+import { createMcpSurface } from "@syrinx/mcp";
 import { createRestApp } from "@syrinx/rest";
 import { invoices, type Deps, type Invoice, type InvoiceStore } from "./app.js";
 
@@ -74,5 +75,16 @@ export function createInvoicesHost(options: HostOptions = {}) {
     ...(options.logger ? { logger: options.logger } : {}),
     openapi: { title: "Invoices example", version: invoices.version },
   });
-  return { registry, app, deps };
+  // The same registry over MCP: POST /mcp serves every app, POST /mcp/invoices this one alone.
+  const mcp = createMcpSurface({
+    registry,
+    deps,
+    authenticate,
+    name: "invoices-example",
+    version: invoices.version,
+    ...(options.logger ? { logger: options.logger } : {}),
+  });
+  app.all("/mcp", (c) => mcp.fetch(c.req.raw));
+  app.all("/mcp/*", (c) => mcp.fetch(c.req.raw));
+  return { registry, app, deps, mcp };
 }

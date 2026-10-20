@@ -4,9 +4,11 @@
     "types": ["node"],
     "paths": {
       "@syrinx/core": ["./packages/core/src/index.ts"],
+      "@syrinx/mcp": ["./packages/mcp/src/index.ts"],
+      "@syrinx/mcp/stdio": ["./packages/mcp/src/stdio.ts"],
       "@syrinx/rest": ["./packages/rest/src/index.ts"],
       "@syrinx/testing": ["./packages/testing/src/index.ts"]
     }
   },
-  "include": ["packages/*/src", "spikes/*/src", "examples/*/src", "vitest.config.ts"]
+  "include": ["packages/*/src", "examples/*/src", "vitest.config.ts"]
 }
