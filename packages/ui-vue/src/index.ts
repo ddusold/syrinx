@@ -7,6 +7,7 @@ import {
   ViewCallError,
   type ContextScope,
   type ContextStore,
+  type DisplayMode,
   type InputPrompt,
   type MountedView,
   type RestBootOptions,
@@ -655,3 +656,289 @@ export async function mountVueView(options: MountVueViewOptions): Promise<Mounte
     },
   };
 }
+
+// ─── The standard container ────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How the view is shown, and the way to change it: `canExpand` and `canCollapse` say whether the host offers the other
+ * mode (fullscreen, or back inline) from where the view is now, and `expand`, `collapse` and `toggle` ask for it. A
+ * refusal or a host that cannot change modes lands in `error`, as {@link useViewAction} keeps it.
+ */
+export function useDisplayMode() {
+  const view = useView();
+  const mode = computed<DisplayMode>(() => view.value.host.displayMode ?? "inline");
+  const available = computed(() => view.value.host.availableDisplayModes ?? []);
+  const canExpand = computed(() => mode.value !== "fullscreen" && available.value.includes("fullscreen"));
+  const canCollapse = computed(() => mode.value === "fullscreen" && available.value.includes("inline"));
+  const request = useViewAction((next: DisplayMode) => view.value.emit.requestDisplayMode(next));
+  return {
+    mode,
+    canExpand,
+    canCollapse,
+    pending: request.pending,
+    error: request.error,
+    expand: () => request.run("fullscreen"),
+    collapse: () => request.run("inline"),
+    toggle: () => request.run(mode.value === "fullscreen" ? "inline" : "fullscreen"),
+  };
+}
+
+interface ContainerAction {
+  label: () => string;
+  disabled: () => boolean;
+  run: () => void;
+}
+interface ContainerApi {
+  /** Whether the container takes actions into its menu (it shows its bar) rather than leaving them where they were put. */
+  collecting: Readonly<Ref<boolean>>;
+  register(action: ContainerAction): () => void;
+}
+const CONTAINER: InjectionKey<ContainerApi> = Symbol("syrinx.container");
+
+const ICON = {
+  expand: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
+  collapse: "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5",
+  more: "M5 12h.01M12 12h.01M19 12h.01",
+} as const;
+const icon = (path: string, size = 18) =>
+  h(
+    "svg",
+    {
+      width: size,
+      height: size,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": 2,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true",
+    },
+    [h("path", { d: path })],
+  );
+
+let containerStyled = false;
+function ensureContainerStyles() {
+  if (containerStyled || typeof document === "undefined") return;
+  containerStyled = true;
+  const style = document.createElement("style");
+  style.dataset.syrinx = "container";
+  style.textContent = [
+    ".syrinx-container-bar{position:sticky;top:var(--syrinx-inset-top,0px);z-index:20;display:flex;align-items:center;gap:6px;padding:8px 12px;min-height:44px;box-sizing:border-box;background:var(--sx-bg,Canvas);color:var(--sx-text,CanvasText);border-bottom:1px solid var(--sx-border,rgba(128,128,128,.3))}",
+    ".syrinx-container-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}",
+    ".syrinx-container-btn{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:13px;cursor:pointer}",
+    ".syrinx-container-btn:hover,.syrinx-container-btn[aria-expanded=true]{background:var(--sx-surface,rgba(128,128,128,.14))}",
+    ".syrinx-container-btn:disabled{opacity:.5;cursor:default}",
+    ".syrinx-container-btn:focus-visible,.syrinx-container-item:focus-visible{outline:2px solid var(--sx-accent,Highlight);outline-offset:1px}",
+    ".syrinx-container-menu{position:relative}",
+    ".syrinx-container-popup{position:absolute;right:0;top:calc(100% + 4px);min-width:200px;padding:4px;margin:0;list-style:none;border:1px solid var(--sx-border,rgba(128,128,128,.3));border-radius:10px;background:var(--sx-bg,Canvas);color:var(--sx-text,CanvasText);box-shadow:0 8px 24px rgba(0,0,0,.18)}",
+    ".syrinx-container-item{display:flex;width:100%;min-height:40px;align-items:center;padding:0 12px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}",
+    ".syrinx-container-item:hover:not(:disabled){background:var(--sx-surface,rgba(128,128,128,.14))}",
+    ".syrinx-container-item:disabled{opacity:.5;cursor:default}",
+    ".syrinx-container-sep{height:1px;margin:4px 0;background:var(--sx-border,rgba(128,128,128,.3))}",
+    ".syrinx-container-note{margin:0;padding:6px 12px;font-size:13px;color:var(--sx-danger,#b00020)}",
+  ].join("");
+  document.head.appendChild(style);
+}
+
+/**
+ * An action a view offers, drawn two ways. Where there is no container taking actions (a web page), the default slot is
+ * drawn in place as the page's own control, given `run` to start the action. Inside a {@link ViewContainer} that is
+ * showing its bar (an MCP host), nothing is drawn in place: the action moves to the container's menu under `label`. Either
+ * way it ends in `select`, so the view writes the action once.
+ *
+ * ```vue
+ * <ViewAction label="Export" @select="exportRows" v-slot="{ run }"><button @click="run">Export</button></ViewAction>
+ * ```
+ * With no slot, the web page gets a plain button.
+ */
+export const ViewAction = defineComponent({
+  name: "ViewAction",
+  props: { label: { type: String, required: true }, disabled: { type: Boolean, default: false } },
+  emits: ["select"],
+  setup(props, { slots, emit }) {
+    const container = inject(CONTAINER, null);
+    const run = () => {
+      if (!props.disabled) emit("select");
+    };
+    let release: (() => void) | undefined;
+    if (container) release = container.register({ label: () => props.label, disabled: () => props.disabled, run });
+    onUnmounted(() => release?.());
+    return () => {
+      if (container?.collecting.value) return null;
+      return slots.default
+        ? slots.default({ run, disabled: props.disabled })
+        : h("button", { type: "button", class: "syrinx-action", disabled: props.disabled, onClick: run }, props.label);
+    };
+  },
+});
+
+/**
+ * The standard container for a view in a host's frame: a bar across the top with Expand / Collapse (where the host offers
+ * fullscreen), a menu of the view's {@link ViewAction}s, and Open in browser (where the view gives it a link). It wraps
+ * {@link ViewFrame}, so it caps, pads for the host's chrome and sticks to the top of what is on screen.
+ *
+ * Optional: a view that does not use it is drawn bare. With `chrome="auto"` (the default) the bar shows on hosts and not on
+ * a web page, where the page has its own chrome and each ViewAction is drawn where the view put it. `always` and `never`
+ * force one or the other.
+ */
+export const ViewContainer = defineComponent({
+  name: "ViewContainer",
+  props: {
+    title: { type: String, default: "" },
+    /** A link to the same thing on the web, or a function that makes it when asked. Without one, there is no such item. */
+    openInBrowser: { type: [String, Function] as PropType<string | (() => string | undefined)>, default: undefined },
+    chrome: { type: String as PropType<"auto" | "always" | "never">, default: "auto" },
+    expandable: { type: Boolean, default: true },
+    maxHeight: { type: Number, default: 640 },
+    natural: { type: Boolean, default: false },
+  },
+  setup(props, { slots }) {
+    ensureContainerStyles();
+    const view = useView();
+    const display = useDisplayMode();
+    const showBar = computed(
+      () => props.chrome === "always" || (props.chrome === "auto" && view.value.host.platform !== "web"),
+    );
+
+    const actions = shallowRef<ContainerAction[]>([]);
+    provide(CONTAINER, {
+      collecting: showBar,
+      register(action) {
+        actions.value = [...actions.value, action];
+        return () => {
+          actions.value = actions.value.filter((a) => a !== action);
+        };
+      },
+    });
+
+    const url = () => (typeof props.openInBrowser === "function" ? props.openInBrowser() : props.openInBrowser);
+    const open = useViewAction(async () => {
+      const target = url();
+      if (target) await view.value.emit.openLink(target);
+    });
+
+    const menuOpen = ref(false);
+    const menuRoot = ref<HTMLElement>();
+    const away = (event: Event) => {
+      if (menuOpen.value && !menuRoot.value?.contains(event.target as Node)) menuOpen.value = false;
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") menuOpen.value = false;
+    };
+    onMounted(() => {
+      document.addEventListener("pointerdown", away);
+      document.addEventListener("keydown", escape);
+    });
+    onUnmounted(() => {
+      document.removeEventListener("pointerdown", away);
+      document.removeEventListener("keydown", escape);
+    });
+
+    const choose = (run: () => void) => {
+      menuOpen.value = false;
+      run();
+    };
+
+    return () => {
+      const body = h("div", { class: "syrinx-container-body" }, slots.default?.());
+      if (!showBar.value) return h(ViewFrame, { maxHeight: props.maxHeight, natural: props.natural }, () => body);
+
+      const items = actions.value.map((a) => ({ label: a.label(), disabled: a.disabled(), run: a.run }));
+      const link = url() ? { label: "Open in browser", disabled: false, run: () => void open.run() } : undefined;
+      const problem = display.error.value ?? open.error.value;
+
+      const buttons = [
+        props.expandable && display.canExpand.value
+          ? h(
+              "button",
+              {
+                type: "button",
+                class: "syrinx-container-btn",
+                disabled: display.pending.value,
+                onClick: () => void display.expand(),
+              },
+              [icon(ICON.expand), "Expand"],
+            )
+          : null,
+        props.expandable && display.canCollapse.value
+          ? h(
+              "button",
+              {
+                type: "button",
+                class: "syrinx-container-btn",
+                disabled: display.pending.value,
+                onClick: () => void display.collapse(),
+              },
+              [icon(ICON.collapse), "Collapse"],
+            )
+          : null,
+      ];
+      const menu =
+        items.length || link
+          ? h("div", { class: "syrinx-container-menu", ref: menuRoot }, [
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "syrinx-container-btn",
+                  "aria-label": "More actions",
+                  "aria-haspopup": "menu",
+                  "aria-expanded": String(menuOpen.value),
+                  onClick: () => (menuOpen.value = !menuOpen.value),
+                },
+                [icon(ICON.more)],
+              ),
+              menuOpen.value
+                ? h("ul", { class: "syrinx-container-popup", role: "menu" }, [
+                    ...items.map((item) =>
+                      h("li", { role: "none" }, [
+                        h(
+                          "button",
+                          {
+                            type: "button",
+                            role: "menuitem",
+                            class: "syrinx-container-item",
+                            disabled: item.disabled,
+                            onClick: () => {
+                              choose(item.run);
+                            },
+                          },
+                          item.label,
+                        ),
+                      ]),
+                    ),
+                    items.length && link ? h("li", { role: "separator", class: "syrinx-container-sep" }) : null,
+                    link
+                      ? h("li", { role: "none" }, [
+                          h(
+                            "button",
+                            {
+                              type: "button",
+                              role: "menuitem",
+                              class: "syrinx-container-item",
+                              onClick: () => {
+                                choose(link.run);
+                              },
+                            },
+                            link.label,
+                          ),
+                        ])
+                      : null,
+                  ])
+                : null,
+            ])
+          : null;
+
+      return h(ViewFrame, { maxHeight: props.maxHeight, natural: props.natural }, () => [
+        h("header", { class: "syrinx-container-bar" }, [
+          h("div", { class: "syrinx-container-title" }, slots.title ? slots.title() : props.title),
+          ...buttons,
+          menu,
+        ]),
+        problem ? h("p", { class: "syrinx-container-note", role: "alert" }, problem.message) : null,
+        body,
+      ]);
+    };
+  },
+});

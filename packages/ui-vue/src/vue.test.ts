@@ -19,6 +19,8 @@ import {
   useViewAction,
   useViewContext,
   useViewPoll,
+  ViewAction,
+  ViewContainer,
   ViewContext,
   ViewFrame,
   ViewPart,
@@ -512,5 +514,136 @@ describe("mountVueView", () => {
     mounted.unmount();
     await nextTick();
     expect(document.querySelector("#root li")).toBeNull();
+  });
+});
+
+describe("ViewContainer and ViewAction", () => {
+  /** Mounts a container around a custom Export action, in a host with the given context. */
+  async function mountContainer(
+    host: HostContext,
+    props: Record<string, unknown> = {},
+    calls: { selected: number; links: string[]; modes: string[] } = { selected: 0, links: [], modes: [] },
+  ) {
+    document.body.innerHTML = `<div id="root"></div>`;
+    const element = must(document.querySelector<HTMLElement>("#root"));
+    const Body = defineComponent(
+      () => () =>
+        h(ViewContainer, { title: "Contacts", ...props }, () => [
+          h(
+            ViewAction,
+            { label: "Export", onSelect: () => (calls.selected += 1) },
+            {
+              default: ({ run }: { run: () => void }) =>
+                h("button", { class: "custom-export", onClick: run }, "Export…"),
+            },
+          ),
+          h("p", { class: "content" }, "inside"),
+        ]),
+    );
+    const b: HostBridge = {
+      connect: () => Promise.resolve(),
+      host: () => host,
+      onHostContext: () => undefined,
+      onResult: () => undefined,
+      call: () => Promise.resolve({ data: {} }),
+      openLink: (url) => {
+        calls.links.push(url);
+        return Promise.resolve();
+      },
+      requestDisplayMode: (mode) => {
+        calls.modes.push(mode);
+        return Promise.resolve(mode);
+      },
+    };
+    await startView({ views: { "invoices/browser": toView(Body) }, boot, bridge: b, element });
+    await nextTick();
+    const q = (selector: string) => element.querySelector<HTMLElement>(selector);
+    const texts = (selector: string) => Array.from(element.querySelectorAll(selector), (e) => e.textContent.trim());
+    return { q, texts, calls, element };
+  }
+
+  type Mounted = Awaited<ReturnType<typeof mountContainer>>;
+  /** Clicks the nth menu item and lets the view settle. */
+  const choose = async (c: Mounted, index: number) => {
+    must(c.element.querySelectorAll<HTMLElement>("[role=menuitem]")[index] ?? null).click();
+    await nextTick();
+  };
+  const menu = async (c: Mounted) => {
+    must(c.q("[aria-haspopup=menu]")).click();
+    await nextTick();
+  };
+
+  it("on a web page draws no bar and leaves the action where the view put it, wired to select", async () => {
+    const c = await mountContainer({ platform: "web", displayMode: "fullscreen" });
+    expect(c.q(".syrinx-container-bar")).toBeNull();
+    expect(c.q(".content")?.textContent).toBe("inside");
+    must(c.q(".custom-export")).click();
+    expect(c.calls.selected).toBe(1);
+  });
+
+  it("in a host shows the bar and moves the action into its menu, with Open in browser after it", async () => {
+    const c = await mountContainer(
+      { platform: "desktop" },
+      { openInBrowser: "https://app.example/contacts?search=a" },
+    );
+    expect(c.q(".syrinx-container-title")?.textContent).toBe("Contacts");
+    expect(c.q(".custom-export")).toBeNull();
+    await menu(c);
+    expect(c.texts("[role=menuitem]")).toEqual(["Export", "Open in browser"]);
+
+    await choose(c, 0);
+    expect(c.calls.selected).toBe(1);
+    expect(c.q("[role=menu]")).toBeNull();
+
+    await menu(c);
+    await choose(c, 1);
+    expect(c.calls.links).toEqual(["https://app.example/contacts?search=a"]);
+  });
+
+  it("offers Open in browser only when the view gives a link, and takes a function that makes it when asked", async () => {
+    const without = await mountContainer({ platform: "desktop" });
+    await menu(without);
+    expect(without.texts("[role=menuitem]")).toEqual(["Export"]);
+
+    const made = await mountContainer({ platform: "desktop" }, { openInBrowser: () => "https://app.example/now" });
+    await menu(made);
+    await choose(made, 1);
+    expect(made.calls.links).toEqual(["https://app.example/now"]);
+  });
+
+  it("shows Expand where the host offers fullscreen and Collapse once it is there, and nothing where it does not", async () => {
+    const inline = await mountContainer({
+      platform: "mobile",
+      displayMode: "inline",
+      availableDisplayModes: ["inline", "fullscreen"],
+    });
+    expect(inline.texts(".syrinx-container-btn")).toContain("Expand");
+    must(inline.element.querySelector<HTMLElement>(".syrinx-container-btn") ?? null).click();
+    await nextTick();
+    expect(inline.calls.modes).toEqual(["fullscreen"]);
+
+    const full = await mountContainer({
+      platform: "mobile",
+      displayMode: "fullscreen",
+      availableDisplayModes: ["inline", "fullscreen"],
+    });
+    expect(full.texts(".syrinx-container-btn")).toContain("Collapse");
+    expect(full.texts(".syrinx-container-btn")).not.toContain("Expand");
+
+    const none = await mountContainer({ platform: "mobile", displayMode: "inline" });
+    expect(none.texts(".syrinx-container-btn")).not.toContain("Expand");
+  });
+
+  it("closes the menu on Escape, and chrome=always or never overrides the host", async () => {
+    const c = await mountContainer({ platform: "desktop" });
+    await menu(c);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await nextTick();
+    expect(c.q("[role=menu]")).toBeNull();
+
+    expect((await mountContainer({ platform: "desktop" }, { chrome: "never" })).q(".syrinx-container-bar")).toBeNull();
+    const forced = await mountContainer({ platform: "web" }, { chrome: "always" });
+    expect(forced.q(".syrinx-container-bar")).not.toBeNull();
+    expect(forced.q(".custom-export")).toBeNull();
   });
 });
