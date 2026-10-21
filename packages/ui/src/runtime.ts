@@ -186,7 +186,12 @@ export async function startView(options: StartOptions): Promise<StartedView> {
   };
 
   const emitFor = (app: string): ViewEmit => ({
-    async call<T>(operation: string, input: unknown = {}) {
+    async call<T>(qualified: string, input: unknown = {}) {
+      // "app.operation" reaches an operation of another app (one the view embeds), as the app's own view would.
+      const dot = qualified.indexOf(".");
+      if (dot > 0 && qualified.slice(0, dot) !== app)
+        return emitFor(qualified.slice(0, dot)).call<T>(qualified.slice(dot + 1), input);
+      const operation = dot > 0 ? qualified.slice(dot + 1) : qualified;
       const route = boot.operations[`${app}.${operation}`];
       if (!route) {
         throw new ViewCallError("unreachable", `${app}.${operation} is not served where this view runs.`);

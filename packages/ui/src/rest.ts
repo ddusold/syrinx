@@ -12,6 +12,11 @@ export interface RestBridgeOptions {
    * any other operation is plain data for the caller and leaves the view alone.
    */
   bound: Readonly<Record<string, string | undefined>>;
+  /**
+   * The views of other apps the root view embeds, by app name: where they are served is `base` with the root app's name
+   * swapped for theirs (`/api/contacts/ops` → `/api/exports/ops`), and `bound` is as above for that app's view.
+   */
+  embeds?: Readonly<Record<string, { view: string; bound: Readonly<Record<string, string | undefined>> }>>;
   /** Headers for every request, such as `authorization`. Called per request, so a token can change. */
   headers?: () => HeadersInit | Promise<HeadersInit>;
   /** Defaults to the global `fetch`. */
@@ -92,7 +97,17 @@ function restCall(transport: RestTransport) {
  * failures arrive as {@link ViewCallError}s the view already handles. Pair it with {@link restBoot} and `startView`.
  */
 export function createRestBridge(options: RestBridgeOptions): HostBridge {
-  const post = restCall(options);
+  const rootApp = options.view.slice(0, options.view.indexOf("/"));
+  const posts = new Map<string, ReturnType<typeof restCall>>();
+  const postFor = (app: string) => {
+    let post = posts.get(app);
+    if (!post) {
+      const base = app === rootApp ? options.base : options.base.replace(new RegExp(`/${rootApp}/ops$`), `/${app}/ops`);
+      post = restCall({ ...options, base });
+      posts.set(app, post);
+    }
+    return post;
+  };
   const dark = typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches;
   const host: HostContext = options.host ?? {
     theme: dark ? "dark" : "light",
@@ -108,12 +123,13 @@ export function createRestBridge(options: RestBridgeOptions): HostBridge {
     host: () => host,
     onHostContext: () => undefined,
     onResult: () => undefined,
-    async call(_tool, input, { operation, resume }) {
-      const result = await post(operation, input, resume);
+    async call(_tool, input, { app, operation, resume }) {
+      const result = await postFor(app)(operation, input, resume);
       if (result.error ?? result.input) return result;
-      if (operation in options.bound) {
-        const component = options.bound[operation];
-        result.view = { view: options.view, op: operation, schemaVersion: "", ...(component ? { component } : {}) };
+      const target = app === rootApp ? { view: options.view, bound: options.bound } : options.embeds?.[app];
+      if (target && operation in target.bound) {
+        const component = target.bound[operation];
+        result.view = { view: target.view, op: operation, schemaVersion: "", ...(component ? { component } : {}) };
       }
       return result;
     },

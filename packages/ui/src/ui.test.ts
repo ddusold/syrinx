@@ -352,7 +352,14 @@ describe("startView", () => {
       },
     });
     const views = { "invoices/browser": module("invoices/browser"), "customers/badge": module("customers/badge") };
-    const open = { ...boot, operations: { ...boot.operations, "invoices.open": { tool: "invoices_open" } } };
+    const open = {
+      ...boot,
+      operations: {
+        ...boot.operations,
+        "invoices.open": { tool: "invoices_open" },
+        "customers.open": { tool: "invoices_open" },
+      },
+    };
     const start = () => startView({ views, boot: open, bridge, element: document.body });
     return { start, calls, unmounts, last: (id: string) => renders[id]?.at(-1) };
   };
@@ -377,6 +384,16 @@ describe("startView", () => {
     expect(unmounts).toEqual(["invoices/browser", "customers/badge"]);
     expect(last("invoices/browser")).toMatchObject({ view: "invoices/browser", canGoBack: false });
     await expect(last("invoices/browser")?.back()).rejects.toMatchObject({ kind: "unreachable" });
+  });
+
+  it("calls an operation of another app by its qualified name, and moves to the view it binds", async () => {
+    const { start, last, unmounts } = twoViews();
+    const started = await start();
+    await started.props().emit.call("list", {});
+    await last("invoices/browser")?.emit.call("customers.open", { id: "c_1" });
+    expect(unmounts).toEqual(["invoices/browser"]);
+    expect(last("customers/badge")).toMatchObject({ canGoBack: true });
+    await expect(last("customers/badge")?.emit.call("billing.open")).rejects.toMatchObject({ kind: "unreachable" });
   });
 
   it("lets a view say what it shows now, for refresh and for back to repeat", async () => {

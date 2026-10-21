@@ -27,7 +27,9 @@ export interface ViewFile {
 export interface ViewEmit {
   /**
    * Calls an operation of the view's own app and resolves with its output. Rejects with a {@link ViewCallError}
-   * when the operation fails, or cannot be reached from where the view is served.
+   * when the operation fails, or cannot be reached from where the view is served. Name an operation of another app as
+   * `"app.operation"` (`call("exports.new")`): a view reaches the operations of the views it embeds, and a result bound
+   * to one of those views swaps this one to it, with a way back.
    */
   call<T = unknown>(operation: string, input?: unknown): Promise<T>;
   /** Asks the host to open a link outside the view. */

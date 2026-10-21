@@ -30,6 +30,33 @@ const options = (fetchFn: typeof fetch) => ({
 const target = (operation: string, extra: object = {}) => ({ app: "contacts", operation, ...extra });
 
 describe("REST bridge", () => {
+  it("serves an embedded app's operations from its own URL and tags results with its view", async () => {
+    const { fetchFn, requests } = fakeFetch(() => ({
+      body: { resultType: "complete", data: { items: [] }, meta: {} },
+    }));
+    const bridge = createRestBridge({
+      ...options(fetchFn),
+      embeds: { exports: { view: "exports/manager", bound: { new: "form" } } },
+    });
+
+    await expect(bridge.call("ignored", {}, { app: "exports", operation: "new" })).resolves.toEqual({
+      data: { items: [] },
+      view: { view: "exports/manager", op: "new", schemaVersion: "", component: "form" },
+    });
+    expect(requests[0]?.url).toBe("/api/exports/ops/new");
+
+    // An operation the embed does not bind is plain data, and the root app still goes to its own URL.
+    await expect(bridge.call("ignored", {}, { app: "exports", operation: "get" })).resolves.toEqual({
+      data: { items: [] },
+    });
+    await bridge.call("ignored", {}, target("get"));
+    expect(requests.map((r) => r.url)).toEqual([
+      "/api/exports/ops/new",
+      "/api/exports/ops/get",
+      "/api/contacts/ops/get",
+    ]);
+  });
+
   it("posts operations by name with the page's headers, and tags bound results with the view and component", async () => {
     const { fetchFn, requests } = fakeFetch(() => ({ body: { resultType: "complete", data: { ok: 1 }, meta: {} } }));
     const bridge = createRestBridge(options(fetchFn));
