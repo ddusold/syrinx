@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +90,36 @@ describe("buildViews", () => {
 });
 
 describe("watchViews", () => {
+  it("also rebuilds when a directory in `watch` changes", async () => {
+    const { root, app } = await fixture("one");
+    const shared = join(root, "shared");
+    await mkdir(shared);
+    await writeFile(join(shared, "tokens.css"), "a{}");
+    const builds: unknown[] = [];
+    const watcher = await watchViews({
+      apps: [app],
+      root,
+      outDir: "dist/views",
+      vite,
+      gallery: false,
+      debounceMs: 20,
+      watch: ["shared"],
+      onBuild: (result) => builds.push(result),
+    });
+    try {
+      expect(builds).toHaveLength(1);
+      await writeFile(join(shared, "tokens.css"), "a{color:red}");
+      await vi.waitFor(
+        () => {
+          expect(builds.length).toBeGreaterThanOrEqual(2);
+        },
+        { timeout: 15_000, interval: 50 },
+      );
+    } finally {
+      watcher.close();
+    }
+  }, 30_000);
+
   it("builds once, then again when a view's source changes", async () => {
     const { root, entry, app } = await fixture("one");
     const builds: unknown[] = [];

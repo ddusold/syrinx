@@ -299,6 +299,8 @@ export interface WatchViewsOptions extends BuildViewsOptions {
   onBuild?: (result: { built: BuiltViews } | { error: unknown }) => void;
   /** Milliseconds to wait for edits to settle before rebuilding. Defaults to 150. */
   debounceMs?: number;
+  /** More directories to watch, relative to `root`: code the views import from outside their own folders. */
+  watch?: readonly string[];
 }
 
 /**
@@ -310,6 +312,7 @@ export async function watchViews(options: WatchViewsOptions): Promise<{ close():
   const root = options.root ?? process.cwd();
   const dirs = new Set<string>();
   for (const app of options.apps) for (const v of Object.values(app.views)) dirs.add(dirname(entryPath(v, root)));
+  for (const extra of options.watch ?? []) dirs.add(resolve(root, extra));
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running = Promise.resolve();
