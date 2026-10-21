@@ -327,14 +327,48 @@ export const Embed = defineComponent({
  * scrolling inside a scrolling frame. In `fullscreen` (a page, or the host's fullscreen mode) there is no cap, and none
  * on a `mobile` host either: a scroll area inside the chat's own fights it for the finger, so the view grows and the
  * chat scrolls. `natural` asks for the same where the view knows better, such as a narrow list of cards.
+ *
+ * In `fullscreen` the host's own chrome (a header, the chat box) can sit over the view: the frame pads itself by the
+ * host's `safeAreaInsets`, and by the device's (`env(safe-area-inset-*)`) if larger. A mobile host that sends no insets
+ * gets a modest fallback, since without one the first and last lines of the view are under the chrome; set
+ * `fallbackInsets` to tune it, or `{}` for none. The insets are also the `--syrinx-inset-*` variables, for content that
+ * positions itself (a sticky header, a bottom bar).
  */
 export const ViewFrame = defineComponent({
   name: "ViewFrame",
-  props: { maxHeight: { type: Number, default: 640 }, natural: { type: Boolean, default: false } },
+  props: {
+    maxHeight: { type: Number, default: 640 },
+    natural: { type: Boolean, default: false },
+    fallbackInsets: {
+      type: Object as PropType<{ top?: number; bottom?: number }>,
+      default: () => ({ top: 56, bottom: 88 }),
+    },
+  },
   setup(props, { slots }) {
     const view = useView();
     return () => {
       const host = view.value.host;
+      const fullscreen = host.displayMode === "fullscreen";
+      const reported = host.safeAreaInsets;
+      const insets =
+        reported ??
+        (fullscreen && host.platform === "mobile"
+          ? { top: 0, right: 0, bottom: 0, left: 0, ...props.fallbackInsets }
+          : undefined);
+      const padding =
+        fullscreen && insets
+          ? {
+              "--syrinx-inset-top": `${insets.top}px`,
+              "--syrinx-inset-right": `${insets.right}px`,
+              "--syrinx-inset-bottom": `${insets.bottom}px`,
+              "--syrinx-inset-left": `${insets.left}px`,
+              boxSizing: "border-box",
+              paddingTop: `max(${insets.top}px, env(safe-area-inset-top, 0px))`,
+              paddingRight: `max(${insets.right}px, env(safe-area-inset-right, 0px))`,
+              paddingBottom: `max(${insets.bottom}px, env(safe-area-inset-bottom, 0px))`,
+              paddingLeft: `max(${insets.left}px, env(safe-area-inset-left, 0px))`,
+            }
+          : undefined;
       const cap =
         host.displayMode === "fullscreen" || host.platform === "mobile" || props.natural
           ? undefined
@@ -350,7 +384,7 @@ export const ViewFrame = defineComponent({
                 overscrollBehavior: "contain",
                 "--frame-max-height": `${cap}px`,
               }
-            : undefined,
+            : padding,
         },
         slots.default?.(),
       );

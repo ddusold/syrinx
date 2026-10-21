@@ -261,6 +261,30 @@ describe("ViewFrame", () => {
     expect(fullscreen.style.overflowY).toBe("");
   });
 
+  it("pads a fullscreen frame by the host's safe-area insets, with a fallback for a mobile host that sends none", async () => {
+    const reported = await frameStyle({
+      displayMode: "fullscreen",
+      platform: "mobile",
+      safeAreaInsets: { top: 64, right: 0, bottom: 90, left: 0 },
+    });
+    expect(reported.style.getPropertyValue("--syrinx-inset-top")).toBe("64px");
+    expect(reported.style.getPropertyValue("--syrinx-inset-bottom")).toBe("90px");
+
+    const fallback = await frameStyle({ displayMode: "fullscreen", platform: "mobile" });
+    expect(fallback.style.getPropertyValue("--syrinx-inset-top")).toBe("56px");
+    expect(fallback.style.getPropertyValue("--syrinx-inset-bottom")).toBe("88px");
+
+    // Nothing to pad on a desktop host that sends nothing, or inline, where the host draws its own chrome around the frame.
+    expect(
+      (await frameStyle({ displayMode: "fullscreen", platform: "desktop" })).style.getPropertyValue(
+        "--syrinx-inset-top",
+      ),
+    ).toBe("");
+    expect(
+      (await frameStyle({ displayMode: "inline", platform: "mobile" })).style.getPropertyValue("--syrinx-inset-top"),
+    ).toBe("");
+  });
+
   it("does not cap on a mobile host or when the view asks for its natural height, so the chat is the only thing that scrolls", async () => {
     expect((await frameStyle({ displayMode: "inline", platform: "mobile" })).style.maxHeight).toBe("");
     const natural = await frameStyle({ displayMode: "inline", platform: "desktop" }, { natural: true });
