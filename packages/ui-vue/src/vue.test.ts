@@ -683,6 +683,47 @@ describe("ViewContainer and ViewAction", () => {
     expect(single.q(".syrinx-container-navbtn")).toBeNull();
   });
 
+  it("lists a section's sub-sections under it, says where you are as Section › Sub-section, and goes to either", async () => {
+    const navigation = [
+      { id: "invoices", label: "Invoices", op: "list" },
+      {
+        id: "customers",
+        label: "Customers",
+        op: "customers.get",
+        input: { id: "all" },
+        children: [
+          { id: "customers-open", label: "Open", op: "customers.get", input: { id: "open" } },
+          { id: "customers-paid", label: "Paid", op: "customers.get", input: { id: "paid" } },
+        ],
+      },
+    ];
+    const tools: { tool: string; input: unknown }[] = [];
+    const c = await mountContainer(
+      { platform: "desktop" },
+      { navigation, current: "customers-open" },
+      { selected: 0, links: [], modes: [], tools },
+    );
+    expect(c.q(".syrinx-container-navbtn")?.textContent).toContain("Customers › Open");
+    must(c.q(".syrinx-container-navbtn")).click();
+    await nextTick();
+    expect(c.texts("[role=menuitemradio]")).toEqual(["Invoices", "Customers", "Open", "Paid"]);
+    expect(c.element.querySelectorAll(".syrinx-container-subitem")).toHaveLength(2);
+    // Only the exact place is checked; its section is marked as holding it.
+    expect(c.texts("[aria-checked=true]")).toEqual(["Open"]);
+    expect(c.q(".syrinx-container-parent-active")?.textContent).toContain("Customers");
+
+    must(c.element.querySelectorAll<HTMLElement>("[role=menuitemradio]")[3] ?? null).click();
+    await nextTick();
+    expect(tools).toEqual([{ tool: "customers_get", input: { id: "paid" } }]);
+
+    // A lone section with sub-sections still has somewhere to go.
+    const lone = await mountContainer(
+      { platform: "desktop" },
+      { navigation: navigation.slice(1, 2), current: "customers" },
+    );
+    expect(lone.q(".syrinx-container-navbtn")?.textContent).toContain("Customers");
+  });
+
   it("leaves the top inset to the sticky bar, so scrolled content cannot show in a strip above it", async () => {
     const c = await mountContainer({ platform: "mobile", displayMode: "fullscreen" });
     const frame = must(c.q(".syrinx-frame"));

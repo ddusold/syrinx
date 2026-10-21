@@ -689,9 +689,11 @@ export function useDisplayMode() {
 export interface ContainerNavItem {
   id: string;
   label: string;
-  /** The operation to call, as `emit.call` takes it: `settings.details` for another app's. */
+  /** The operation to call, as `emit.call` takes it: `settings.get` for another app's. */
   op: string;
   input?: unknown;
+  /** Sub-sections (Settings → Details, Product Groups): listed under the item, indented, each its own place to go. */
+  children?: ContainerNavItem[];
 }
 
 interface ContainerAction {
@@ -742,6 +744,8 @@ function ensureContainerStyles() {
     ".syrinx-container-navbtn{max-width:100%;font-size:inherit;font-weight:600}",
     ".syrinx-container-navbtn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
     ".syrinx-container-popup.left{left:0;right:auto}",
+    ".syrinx-container-subitem{padding-left:34px;font-size:13px}",
+    ".syrinx-container-parent-active{font-weight:600}",
     ".syrinx-container-item .syrinx-check{width:18px;margin-right:6px;flex:none;display:inline-flex}",
     ".syrinx-container-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}",
     ".syrinx-container-btn{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:13px;cursor:pointer}",
@@ -886,9 +890,20 @@ export const ViewContainer = defineComponent({
       const items = actions.value.map((a) => ({ label: a.label(), disabled: a.disabled(), run: a.run }));
       const link = url() ? { label: "Open in browser", disabled: false, run: () => void open.run() } : undefined;
       const problem = display.error.value ?? open.error.value ?? go.error.value;
-      const active = props.navigation.find((item) => item.id === props.current);
+      // The places in order, each sub-section right after its section.
+      const places = props.navigation.flatMap((item) => [
+        { item, parent: undefined as ContainerNavItem | undefined },
+        ...(item.children ?? []).map((child) => ({ item: child, parent: item })),
+      ]);
+      const active = places.find((place) => place.item.id === props.current);
+      // On a sub-section the trigger says where: "Settings › Product Groups".
+      const here = active
+        ? active.parent
+          ? `${active.parent.label} › ${active.item.label}`
+          : active.item.label
+        : props.title;
       const title =
-        props.navigation.length > 1
+        places.length > 1
           ? h("div", { class: "syrinx-container-nav", ref: navRoot }, [
               h(
                 "button",
@@ -899,36 +914,35 @@ export const ViewContainer = defineComponent({
                   "aria-expanded": String(navOpen.value),
                   onClick: () => (navOpen.value = !navOpen.value),
                 },
-                [h("span", slots.title ? slots.title() : (active?.label ?? props.title)), icon(ICON.chevron, 16)],
+                [h("span", slots.title ? slots.title() : here), icon(ICON.chevron, 16)],
               ),
               navOpen.value
                 ? h(
                     "ul",
                     { class: "syrinx-container-popup left", role: "menu", "aria-label": "Go to" },
-                    props.navigation.map((item) =>
-                      h("li", { role: "none" }, [
+                    places.map(({ item, parent }) => {
+                      const current = item.id === props.current;
+                      const holdsCurrent = !parent && (item.children ?? []).some((child) => child.id === props.current);
+                      return h("li", { role: "none" }, [
                         h(
                           "button",
                           {
                             type: "button",
                             role: "menuitemradio",
-                            "aria-checked": String(item.id === props.current),
-                            class: "syrinx-container-item",
+                            "aria-checked": String(current),
+                            class: [
+                              "syrinx-container-item",
+                              parent ? "syrinx-container-subitem" : "",
+                              holdsCurrent ? "syrinx-container-parent-active" : "",
+                            ],
                             onClick: () => {
                               goTo(item);
                             },
                           },
-                          [
-                            h(
-                              "span",
-                              { class: "syrinx-check" },
-                              item.id === props.current ? [icon(ICON.check, 16)] : [],
-                            ),
-                            item.label,
-                          ],
+                          [h("span", { class: "syrinx-check" }, current ? [icon(ICON.check, 16)] : []), item.label],
                         ),
-                      ]),
-                    ),
+                      ]);
+                    }),
                   )
                 : null,
             ])
