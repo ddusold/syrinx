@@ -38,6 +38,11 @@ export interface ViewExample {
 /** A view as declared with `view()`, before `defineApp` gives it its app and name. */
 export interface ViewDefinition<Bound extends string = string, Calls extends string = string> {
   readonly title?: string;
+  /**
+   * What the page is for and when to open it. Recommended for every view a model can reach (the lint warns without one):
+   * it is added to the description of each tool that opens the view, so a request like "change my brand settings" can be
+   * matched to the page, and not only to a tool's name. Say what the user can see or change there, in their words.
+   */
   readonly description?: string;
   /**
    * The view module, resolved at build time: `new URL("./views/InvoiceCard.vue", import.meta.url)`. Server code never

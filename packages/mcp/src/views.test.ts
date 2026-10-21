@@ -84,6 +84,7 @@ const invoices = defineApp({
   views: {
     browser: view({
       title: "Invoice browser",
+      description: "Browse and open the organization's invoices, and send a draft to its customer.",
       entry,
       boundTo: ["list", { op: "get", component: "detail" }],
       calls: ["send", "select"],
@@ -158,6 +159,20 @@ describe("views over MCP", () => {
       purge: { visibility: ["model"] },
       [VIEW_CALL_TOOL]: { visibility: ["app"] },
     });
+  });
+
+  it("tells the model what page a tool opens by adding the view's description to the tools that open it, and only those", async () => {
+    const { tools } = await (await connect("/mcp/invoices")).listTools();
+    const describedAs = (name: string) => tools.find((t) => t.name === name)?.description ?? "";
+    for (const name of ["list", "get"]) {
+      expect(describedAs(name)).toContain(
+        'Opens the "Invoice browser" page. Browse and open the organization\'s invoices',
+      );
+    }
+    // The operation's own description still leads, and tools that do not open the view are left alone.
+    expect(describedAs("list")).toMatch(/^List every invoice\./);
+    expect(describedAs("send")).toBe("Email a draft invoice to its customer.");
+    expect(describedAs("select")).not.toContain("Opens the");
   });
 
   it("lists view resources as MCP Apps HTML and reads the rendered shell with merged CSP", async () => {

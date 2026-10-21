@@ -60,6 +60,17 @@ export const SURFACE_META_KEY = `${META_PREFIX}/surface`;
  */
 export const VIEW_CALL_TOOL = "syrinx_view_call";
 /** The MCP Apps extension id hosts declare in `capabilities.extensions`. */
+/**
+ * A tool that opens a view tells the model about the page it opens, in the view's own description, so a request in the
+ * user's words ("change my brand settings") reaches the tool whose name alone would not say so. Only for tools a model can
+ * call; app-only operations are not chosen by models.
+ */
+function withViewContext(description: string, view: View | undefined, forModel: boolean) {
+  const about = view?.description?.trim();
+  if (!view || !about || !forModel) return description;
+  return `${description}\n\nOpens the "${view.title ?? view.name}" page. ${about}`;
+}
+
 export const APPS_EXTENSION = "io.modelcontextprotocol/ui";
 /** The MCP Apps resource type (`io.modelcontextprotocol/ui`). */
 export const VIEW_MIME_TYPE = "text/html;profile=mcp-app";
@@ -538,7 +549,11 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
         toolName(app, opName, operation, scope),
         {
           ...(operation.title ? { title: operation.title } : {}),
-          description: mcp?.description ?? operation.description,
+          description: withViewContext(
+            mcp?.description ?? operation.description,
+            binding?.view,
+            isVisible(operation, "model"),
+          ),
           inputSchema: publishOnly(toJsonSchema(operation.input, "input")),
           ...(structured ? { outputSchema: publishOnly(toJsonSchema(operation.output, "output")) } : {}),
           annotations: {
