@@ -229,13 +229,17 @@ describe("ViewFrame", () => {
     return must(element.querySelector<HTMLElement>(".syrinx-frame"));
   }
 
-  it("caps and scrolls at 640px by default, at the host's limit when it sends one, and not at all fullscreen", async () => {
+  it("caps and scrolls at 640px by default, lower when the host's limit is, and not at all fullscreen", async () => {
     const byDefault = await frameStyle({ displayMode: "inline" });
     expect(byDefault.style.maxHeight).toBe("640px");
     expect(byDefault.style.overflowY).toBe("auto");
     expect(byDefault.querySelector(".content")?.textContent).toBe("inside");
 
     expect((await frameStyle({ containerDimensions: { maxHeight: 480 } })).style.maxHeight).toBe("480px");
+    // A host's higher limit does not lift the cap, and the cap is there for content to size by.
+    const roomy = await frameStyle({ containerDimensions: { maxHeight: 1600 } });
+    expect(roomy.style.maxHeight).toBe("640px");
+    expect(roomy.style.getPropertyValue("--frame-max-height")).toBe("640px");
     expect((await frameStyle({}, { maxHeight: 300 })).style.maxHeight).toBe("300px");
 
     const fullscreen = await frameStyle({ displayMode: "fullscreen", containerDimensions: { maxHeight: 480 } });

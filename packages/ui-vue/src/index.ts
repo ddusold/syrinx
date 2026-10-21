@@ -313,8 +313,10 @@ export const Embed = defineComponent({
 /**
  * Caps the view's height and scrolls inside it, for views drawn in a host frame. An MCP Apps host sizes the frame to the
  * view's content, so an uncapped long view fills the chat; and `min-height: 100vh` on the content makes it worse, since
- * the viewport is the frame and the view can only grow. The cap is the host's `containerDimensions.maxHeight` when it
- * sends one, else `maxHeight` (default 640px). In `fullscreen` (a page, or the host's fullscreen mode) there is no cap.
+ * the viewport is the frame and the view can only grow. The cap is `maxHeight` (default 640px), lowered to the host's
+ * `containerDimensions.maxHeight` when that is smaller: a host's generous limit does not lift it. The cap is also set
+ * as `--frame-max-height` on the frame, so content that fills the space (a table) can size itself to fit instead of
+ * scrolling inside a scrolling frame. In `fullscreen` (a page, or the host's fullscreen mode) there is no cap.
  */
 export const ViewFrame = defineComponent({
   name: "ViewFrame",
@@ -324,12 +326,21 @@ export const ViewFrame = defineComponent({
     return () => {
       const host = view.value.host;
       const cap =
-        host.displayMode === "fullscreen" ? undefined : (host.containerDimensions?.maxHeight ?? props.maxHeight);
+        host.displayMode === "fullscreen"
+          ? undefined
+          : Math.min(props.maxHeight, host.containerDimensions?.maxHeight ?? Infinity);
       return h(
         "div",
         {
           class: "syrinx-frame",
-          style: cap ? { maxHeight: `${cap}px`, overflowY: "auto", overscrollBehavior: "contain" } : undefined,
+          style: cap
+            ? {
+                maxHeight: `${cap}px`,
+                overflowY: "auto",
+                overscrollBehavior: "contain",
+                "--frame-max-height": `${cap}px`,
+              }
+            : undefined,
         },
         slots.default?.(),
       );
