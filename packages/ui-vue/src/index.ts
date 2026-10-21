@@ -685,6 +685,15 @@ export function useDisplayMode() {
   };
 }
 
+/** One place the container's navigation can go: an operation to call, whose result swaps the frame to its view. */
+export interface ContainerNavItem {
+  id: string;
+  label: string;
+  /** The operation to call, as `emit.call` takes it: `settings.details` for another app's. */
+  op: string;
+  input?: unknown;
+}
+
 interface ContainerAction {
   label: () => string;
   disabled: () => boolean;
@@ -701,6 +710,8 @@ const ICON = {
   expand: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5",
   collapse: "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5",
   more: "M5 12h.01M12 12h.01M19 12h.01",
+  chevron: "M6 9l6 6 6-6",
+  check: "M5 12l5 5 9-10",
 } as const;
 const icon = (path: string, size = 18) =>
   h(
@@ -727,6 +738,11 @@ function ensureContainerStyles() {
   style.dataset.syrinx = "container";
   style.textContent = [
     ".syrinx-container-bar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:6px;padding:calc(8px + max(var(--syrinx-inset-top,0px),env(safe-area-inset-top,0px))) 12px 8px;min-height:44px;box-sizing:border-box;background:var(--sx-bg,Canvas);color:var(--sx-text,CanvasText);border-bottom:1px solid var(--sx-border,rgba(128,128,128,.3))}",
+    ".syrinx-container-nav{position:relative;flex:1;min-width:0}",
+    ".syrinx-container-navbtn{max-width:100%;font-size:inherit;font-weight:600}",
+    ".syrinx-container-navbtn span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+    ".syrinx-container-popup.left{left:0;right:auto}",
+    ".syrinx-container-item .syrinx-check{width:18px;margin-right:6px;flex:none;display:inline-flex}",
     ".syrinx-container-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}",
     ".syrinx-container-btn{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:13px;cursor:pointer}",
     ".syrinx-container-btn:hover,.syrinx-container-btn[aria-expanded=true]{background:var(--sx-surface,rgba(128,128,128,.14))}",
@@ -788,6 +804,10 @@ export const ViewContainer = defineComponent({
   name: "ViewContainer",
   props: {
     title: { type: String, default: "" },
+    /** The top-level places the user can move between (Contacts, Settings); the title becomes a dropdown of them. */
+    navigation: { type: Array as PropType<ContainerNavItem[]>, default: () => [] },
+    /** The id of the item the view is showing now. */
+    current: { type: String, default: "" },
     /** A link to the same thing on the web, or a function that makes it when asked. Without one, there is no such item. */
     openInBrowser: { type: [String, Function] as PropType<string | (() => string | undefined)>, default: undefined },
     chrome: { type: String as PropType<"auto" | "always" | "never">, default: "auto" },
@@ -822,11 +842,26 @@ export const ViewContainer = defineComponent({
 
     const menuOpen = ref(false);
     const menuRoot = ref<HTMLElement>();
+    const navOpen = ref(false);
+    const navRoot = ref<HTMLElement>();
     const away = (event: Event) => {
       if (menuOpen.value && !menuRoot.value?.contains(event.target as Node)) menuOpen.value = false;
+      if (navOpen.value && !navRoot.value?.contains(event.target as Node)) navOpen.value = false;
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") menuOpen.value = false;
+      if (event.key === "Escape") {
+        menuOpen.value = false;
+        navOpen.value = false;
+      }
+    };
+
+    // Moving to another top-level place is a call whose result swaps the frame; the body is veiled until it arrives.
+    const go = useViewAction(async (item: ContainerNavItem) => {
+      await view.value.emit.call(item.op, item.input ?? {});
+    });
+    const goTo = (item: ContainerNavItem) => {
+      navOpen.value = false;
+      if (item.id !== props.current) void go.run(item);
     };
     onMounted(() => {
       document.addEventListener("pointerdown", away);
@@ -843,12 +878,61 @@ export const ViewContainer = defineComponent({
     };
 
     return () => {
-      const body = h("div", { class: "syrinx-container-body" }, slots.default?.());
+      const body = h(ViewPending, { active: go.pending.value, label: "Loading…" }, () =>
+        h("div", { class: "syrinx-container-body" }, slots.default?.()),
+      );
       if (!showBar.value) return h(ViewFrame, { maxHeight: props.maxHeight, natural: props.natural }, () => body);
 
       const items = actions.value.map((a) => ({ label: a.label(), disabled: a.disabled(), run: a.run }));
       const link = url() ? { label: "Open in browser", disabled: false, run: () => void open.run() } : undefined;
-      const problem = display.error.value ?? open.error.value;
+      const problem = display.error.value ?? open.error.value ?? go.error.value;
+      const active = props.navigation.find((item) => item.id === props.current);
+      const title =
+        props.navigation.length > 1
+          ? h("div", { class: "syrinx-container-nav", ref: navRoot }, [
+              h(
+                "button",
+                {
+                  type: "button",
+                  class: "syrinx-container-btn syrinx-container-navbtn",
+                  "aria-haspopup": "menu",
+                  "aria-expanded": String(navOpen.value),
+                  onClick: () => (navOpen.value = !navOpen.value),
+                },
+                [h("span", slots.title ? slots.title() : (active?.label ?? props.title)), icon(ICON.chevron, 16)],
+              ),
+              navOpen.value
+                ? h(
+                    "ul",
+                    { class: "syrinx-container-popup left", role: "menu", "aria-label": "Go to" },
+                    props.navigation.map((item) =>
+                      h("li", { role: "none" }, [
+                        h(
+                          "button",
+                          {
+                            type: "button",
+                            role: "menuitemradio",
+                            "aria-checked": String(item.id === props.current),
+                            class: "syrinx-container-item",
+                            onClick: () => {
+                              goTo(item);
+                            },
+                          },
+                          [
+                            h(
+                              "span",
+                              { class: "syrinx-check" },
+                              item.id === props.current ? [icon(ICON.check, 16)] : [],
+                            ),
+                            item.label,
+                          ],
+                        ),
+                      ]),
+                    ),
+                  )
+                : null,
+            ])
+          : h("div", { class: "syrinx-container-title" }, slots.title ? slots.title() : props.title);
 
       const buttons = [
         props.expandable && display.canExpand.value
@@ -933,11 +1017,7 @@ export const ViewContainer = defineComponent({
           : null;
 
       return h(ViewFrame, { maxHeight: props.maxHeight, natural: props.natural, padTop: false }, () => [
-        h("header", { class: "syrinx-container-bar" }, [
-          h("div", { class: "syrinx-container-title" }, slots.title ? slots.title() : props.title),
-          ...buttons,
-          menu,
-        ]),
+        h("header", { class: "syrinx-container-bar" }, [title, ...buttons, menu]),
         problem ? h("p", { class: "syrinx-container-note", role: "alert" }, problem.message) : null,
         body,
       ]);

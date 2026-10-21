@@ -522,7 +522,11 @@ describe("ViewContainer and ViewAction", () => {
   async function mountContainer(
     host: HostContext,
     props: Record<string, unknown> = {},
-    calls: { selected: number; links: string[]; modes: string[] } = { selected: 0, links: [], modes: [] },
+    calls: { selected: number; links: string[]; modes: string[]; tools?: { tool: string; input: unknown }[] } = {
+      selected: 0,
+      links: [],
+      modes: [],
+    },
   ) {
     document.body.innerHTML = `<div id="root"></div>`;
     const element = must(document.querySelector<HTMLElement>("#root"));
@@ -545,7 +549,10 @@ describe("ViewContainer and ViewAction", () => {
       host: () => host,
       onHostContext: () => undefined,
       onResult: () => undefined,
-      call: () => Promise.resolve({ data: {} }),
+      call: (tool, input) => {
+        calls.tools?.push({ tool, input });
+        return Promise.resolve({ data: {} });
+      },
       openLink: (url) => {
         calls.links.push(url);
         return Promise.resolve();
@@ -555,7 +562,13 @@ describe("ViewContainer and ViewAction", () => {
         return Promise.resolve(mode);
       },
     };
-    await startView({ views: { "invoices/browser": toView(Body) }, boot, bridge: b, element });
+    const routes = { "invoices.list": { tool: "invoices_list" }, "customers.get": { tool: "customers_get" } };
+    await startView({
+      views: { "invoices/browser": toView(Body) },
+      boot: { ...boot, operations: routes },
+      bridge: b,
+      element,
+    });
     await nextTick();
     const q = (selector: string) => element.querySelector<HTMLElement>(selector);
     const texts = (selector: string) => Array.from(element.querySelectorAll(selector), (e) => e.textContent.trim());
@@ -632,6 +645,42 @@ describe("ViewContainer and ViewAction", () => {
 
     const none = await mountContainer({ platform: "mobile", displayMode: "inline" });
     expect(none.texts(".syrinx-container-btn")).not.toContain("Expand");
+  });
+
+  it("turns the title into a dropdown of top-level places, marks the current one and calls the chosen one's operation", async () => {
+    const navigation = [
+      { id: "invoices", label: "Invoices", op: "list" },
+      { id: "customers", label: "Customers", op: "customers.get", input: { id: "c_1" } },
+    ];
+    const tools: { tool: string; input: unknown }[] = [];
+    const c = await mountContainer(
+      { platform: "desktop" },
+      { navigation, current: "invoices", title: "ignored when the current item has a label" },
+      { selected: 0, links: [], modes: [], tools },
+    );
+    expect(c.q(".syrinx-container-navbtn")?.textContent).toContain("Invoices");
+    must(c.q(".syrinx-container-navbtn")).click();
+    await nextTick();
+    expect(c.texts("[role=menuitemradio]")).toEqual(["Invoices", "Customers"]);
+    expect(c.q("[aria-checked=true]")?.textContent).toContain("Invoices");
+
+    // The current place does nothing; another calls its operation with its input.
+    must(c.element.querySelectorAll<HTMLElement>("[role=menuitemradio]")[0] ?? null).click();
+    await nextTick();
+    expect(tools).toEqual([]);
+    must(c.q(".syrinx-container-navbtn")).click();
+    await nextTick();
+    must(c.element.querySelectorAll<HTMLElement>("[role=menuitemradio]")[1] ?? null).click();
+    await nextTick();
+    expect(tools).toEqual([{ tool: "customers_get", input: { id: "c_1" } }]);
+    expect(c.q("[role=menu]")).toBeNull();
+
+    // A single place is only a title.
+    const single = await mountContainer(
+      { platform: "desktop" },
+      { navigation: navigation.slice(0, 1), current: "invoices" },
+    );
+    expect(single.q(".syrinx-container-navbtn")).toBeNull();
   });
 
   it("leaves the top inset to the sticky bar, so scrolled content cannot show in a strip above it", async () => {
