@@ -297,6 +297,13 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
           );
         }
       }
+      for (const target of v.navigatesTo()) {
+        if (byName.get(target.app)?.views[target.name] !== target) {
+          throw new TypeError(
+            `View "${app.name}.${v.name}" navigates to "${target.app}.${target.name}", whose app is not registered.`,
+          );
+        }
+      }
     }
   }
 

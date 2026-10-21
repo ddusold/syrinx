@@ -344,6 +344,8 @@ export const ViewFrame = defineComponent({
       type: Object as PropType<{ top?: number; bottom?: number }>,
       default: () => ({ top: 56, bottom: 88 }),
     },
+    /** Pad the top by the host's inset. A container with a sticky bar turns it off: the bar takes the inset itself, so it covers it. */
+    padTop: { type: Boolean, default: true },
   },
   setup(props, { slots }) {
     const view = useView();
@@ -364,7 +366,7 @@ export const ViewFrame = defineComponent({
               "--syrinx-inset-bottom": `${insets.bottom}px`,
               "--syrinx-inset-left": `${insets.left}px`,
               boxSizing: "border-box",
-              paddingTop: `max(${insets.top}px, env(safe-area-inset-top, 0px))`,
+              paddingTop: props.padTop ? `max(${insets.top}px, env(safe-area-inset-top, 0px))` : undefined,
               paddingRight: `max(${insets.right}px, env(safe-area-inset-right, 0px))`,
               paddingBottom: `max(${insets.bottom}px, env(safe-area-inset-bottom, 0px))`,
               paddingLeft: `max(${insets.left}px, env(safe-area-inset-left, 0px))`,
@@ -724,7 +726,7 @@ function ensureContainerStyles() {
   const style = document.createElement("style");
   style.dataset.syrinx = "container";
   style.textContent = [
-    ".syrinx-container-bar{position:sticky;top:var(--syrinx-inset-top,0px);z-index:20;display:flex;align-items:center;gap:6px;padding:8px 12px;min-height:44px;box-sizing:border-box;background:var(--sx-bg,Canvas);color:var(--sx-text,CanvasText);border-bottom:1px solid var(--sx-border,rgba(128,128,128,.3))}",
+    ".syrinx-container-bar{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:6px;padding:calc(8px + max(var(--syrinx-inset-top,0px),env(safe-area-inset-top,0px))) 12px 8px;min-height:44px;box-sizing:border-box;background:var(--sx-bg,Canvas);color:var(--sx-text,CanvasText);border-bottom:1px solid var(--sx-border,rgba(128,128,128,.3))}",
     ".syrinx-container-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}",
     ".syrinx-container-btn{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 10px;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit;font:inherit;font-size:13px;cursor:pointer}",
     ".syrinx-container-btn:hover,.syrinx-container-btn[aria-expanded=true]{background:var(--sx-surface,rgba(128,128,128,.14))}",
@@ -930,7 +932,7 @@ export const ViewContainer = defineComponent({
             ])
           : null;
 
-      return h(ViewFrame, { maxHeight: props.maxHeight, natural: props.natural }, () => [
+      return h(ViewFrame, { maxHeight: props.maxHeight, natural: props.natural, padTop: false }, () => [
         h("header", { class: "syrinx-container-bar" }, [
           h("div", { class: "syrinx-container-title" }, slots.title ? slots.title() : props.title),
           ...buttons,

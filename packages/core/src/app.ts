@@ -356,6 +356,7 @@ function stampViews(
       boundTo: Object.freeze([...(def.boundTo ?? [])]),
       calls: Object.freeze([...(def.calls ?? [])]),
       embeds: [],
+      navigatesTo: () => (typeof def.navigatesTo === "function" ? def.navigatesTo() : (def.navigatesTo ?? [])),
       features: Object.freeze({ ...def.features }),
     };
   }

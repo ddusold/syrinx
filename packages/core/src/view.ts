@@ -53,6 +53,13 @@ export interface ViewDefinition<Bound extends string = string, Calls extends str
    * (`customers.views.badge`) or, by the same object, views declared in this app.
    */
   readonly embeds?: readonly (View | ViewDefinition)[];
+  /**
+   * Views this one lets the user move to (a top-level navigation: Contacts, Settings), shipped in this view's bundle with
+   * the operations they need, so the frame can swap to one in place. Unlike `embeds` they are not rendered inside this
+   * view and may loop: two apps can each list the other. Because the other app's view may not exist yet when this one is
+   * declared, give a function: `navigatesTo: () => [settings.views.details]`.
+   */
+  readonly navigatesTo?: readonly View[] | (() => readonly View[]);
   /** Flags the view reads to turn behavior on or off, such as `{ actions: true }`. */
   readonly features?: Readonly<Record<string, boolean>>;
   readonly csp?: ViewCsp;
@@ -65,7 +72,7 @@ export interface ViewDefinition<Bound extends string = string, Calls extends str
 
 export interface View<Bound extends string = string, Calls extends string = string> extends Omit<
   ViewDefinition<Bound, Calls>,
-  "embeds"
+  "embeds" | "navigatesTo"
 > {
   readonly kind: "view";
   /** Set by `defineApp`: the app that owns the view. */
@@ -75,6 +82,8 @@ export interface View<Bound extends string = string, Calls extends string = stri
   readonly boundTo: readonly ViewBinding<Bound>[];
   readonly calls: readonly Calls[];
   readonly embeds: readonly View[];
+  /** The views this one may move to, resolved when asked (they may belong to apps declared later). */
+  readonly navigatesTo: () => readonly View[];
   readonly features: Readonly<Record<string, boolean>>;
 }
 
@@ -91,13 +100,17 @@ export const viewId = (v: Pick<View, "app" | "name">) => `${v.app}/${v.name}`;
 export const bindingOp = (b: ViewBinding) => (typeof b === "string" ? b : b.op);
 export const bindingComponent = (b: ViewBinding) => (typeof b === "string" ? undefined : b.component);
 
-/** The root view and every view it embeds, transitively, each once. Embeds are checked to be acyclic by defineApp. */
+/**
+ * The root view and every view it embeds or navigates to, transitively, each once. Embeds are checked to be acyclic by
+ * defineApp; navigation may loop, which the visited set handles.
+ */
 export function viewClosure(root: View): View[] {
   const seen = new Map<string, View>();
   const visit = (v: View) => {
     if (seen.has(viewId(v))) return;
     seen.set(viewId(v), v);
     v.embeds.forEach(visit);
+    v.navigatesTo().forEach(visit);
   };
   visit(root);
   return [...seen.values()];

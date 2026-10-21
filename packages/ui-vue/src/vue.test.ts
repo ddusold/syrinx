@@ -634,6 +634,15 @@ describe("ViewContainer and ViewAction", () => {
     expect(none.texts(".syrinx-container-btn")).not.toContain("Expand");
   });
 
+  it("leaves the top inset to the sticky bar, so scrolled content cannot show in a strip above it", async () => {
+    const c = await mountContainer({ platform: "mobile", displayMode: "fullscreen" });
+    const frame = must(c.q(".syrinx-frame"));
+    // The frame does not pad the top (that strip would be see-through when the bar sticks); the bar pads itself by the inset.
+    expect(frame.style.paddingTop).toBe("");
+    expect(frame.style.getPropertyValue("--syrinx-inset-top")).toBe("56px");
+    expect(frame.style.getPropertyValue("--syrinx-inset-bottom")).toBe("88px");
+  });
+
   it("closes the menu on Escape, and chrome=always or never overrides the host", async () => {
     const c = await mountContainer({ platform: "desktop" });
     await menu(c);

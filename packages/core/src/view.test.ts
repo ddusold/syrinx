@@ -1,6 +1,16 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
-import { createRegistry, defineApp, op, schemaVersion, view, viewClosure, type ViewData } from "./index.js";
+import {
+  createRegistry,
+  defineApp,
+  op,
+  schemaVersion,
+  view,
+  viewClosure,
+  viewId,
+  type View,
+  type ViewData,
+} from "./index.js";
 
 const entry = new URL("./views/Card.vue", import.meta.url);
 const Item = z.object({ id: z.string(), name: z.string() });
@@ -76,6 +86,30 @@ describe("view", () => {
     expect(viewClosure(items.views.browser).map((v) => v.name)).toEqual(["browser", "row", "badge"]);
     expect(() => createRegistry([items])).toThrow(/embeds "people.badge", whose app is not registered/);
     expect(() => createRegistry([people, items])).not.toThrow();
+  });
+
+  it("lets two apps' views navigate to each other, bundling both ways, which embedding would not allow", () => {
+    const later: { projects?: View } = {};
+    const tasks = defineApp({
+      name: "tasks",
+      version: "1.0.0",
+      description: "Tasks.",
+      operations: { read },
+      // The other app does not exist yet when this one is declared, so the link is a function.
+      views: { main: view({ entry, boundTo: ["read"], navigatesTo: () => (later.projects ? [later.projects] : []) }) },
+    });
+    const projects = defineApp({
+      name: "projects",
+      version: "1.0.0",
+      description: "Projects.",
+      operations: { read },
+      views: { main: view({ entry, boundTo: ["read"], navigatesTo: () => [tasks.views.main] }) },
+    });
+    later.projects = projects.views.main;
+    expect(viewClosure(tasks.views.main).map(viewId)).toEqual(["tasks/main", "projects/main"]);
+    expect(viewClosure(projects.views.main).map(viewId)).toEqual(["projects/main", "tasks/main"]);
+    expect(() => createRegistry([tasks, projects])).not.toThrow();
+    expect(() => createRegistry([tasks])).toThrow(/navigates to "projects.main", whose app is not registered/);
   });
 
   it("types the data as the output of the bound operations", () => {
