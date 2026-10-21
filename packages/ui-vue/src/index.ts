@@ -381,7 +381,8 @@ export const ViewFrame = defineComponent({
             ? {
                 maxHeight: `${cap}px`,
                 overflowY: "auto",
-                overscrollBehavior: "contain",
+                // Chains to the host: a scroll that reaches the end of the view carries on in the chat, not stops here.
+                overscrollBehavior: "auto",
                 "--frame-max-height": `${cap}px`,
               }
             : padding,

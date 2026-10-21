@@ -247,6 +247,8 @@ describe("ViewFrame", () => {
     const byDefault = await frameStyle({ displayMode: "inline" });
     expect(byDefault.style.maxHeight).toBe("640px");
     expect(byDefault.style.overflowY).toBe("auto");
+    // A scroll at the end of the view must reach the chat behind it, not be swallowed.
+    expect(byDefault.style.overscrollBehavior).not.toBe("contain");
     expect(byDefault.querySelector(".content")?.textContent).toBe("inside");
 
     expect((await frameStyle({ containerDimensions: { maxHeight: 480 } })).style.maxHeight).toBe("480px");
