@@ -7,7 +7,14 @@ import {
   type AppsChannelOptions,
   type AppsHostContext,
 } from "./apps-channel.js";
-import { ViewCallError, type BridgeResult, type HostBridge, type HostContext, type InputNeeded } from "./types.js";
+import {
+  ViewCallError,
+  type BridgeResult,
+  type DisplayMode,
+  type HostBridge,
+  type HostContext,
+  type InputNeeded,
+} from "./types.js";
 
 // The `_meta` keys @syrinx/mcp writes. Repeated here so view bundles never import server code; a test keeps them equal.
 export const META_PREFIX = "io.github.ddusold.syrinx";
@@ -99,6 +106,7 @@ function toHostContext(context: AppsHostContext): HostContext {
   const host: HostContext = {};
   if (context.theme) host.theme = context.theme;
   if (context.displayMode) host.displayMode = context.displayMode;
+  if (context.availableDisplayModes) host.availableDisplayModes = context.availableDisplayModes;
   if (context.containerDimensions) host.containerDimensions = context.containerDimensions;
   if (context.safeAreaInsets) host.safeAreaInsets = context.safeAreaInsets;
   if (context.locale) host.locale = context.locale;
@@ -183,6 +191,17 @@ export function createMcpBridge(
           ? { uri, mimeType: file.mimeType, blob: file.base64 }
           : { uri, mimeType: file.mimeType, text: file.text ?? "" };
       await hostRequest(METHODS.downloadFile, { contents: [{ type: "resource", resource }] }, "download the file");
+    },
+    async requestDisplayMode(mode) {
+      try {
+        const result = await apps.request<{ mode?: DisplayMode }>(METHODS.requestDisplayMode, { mode });
+        return result.mode ?? context.displayMode ?? "inline";
+      } catch (error) {
+        throw new ViewCallError(
+          "host",
+          `This host cannot change display modes: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     },
     async sendMessage(text) {
       await hostRequest(METHODS.message, { role: "user", content: [{ type: "text", text }] }, "send a message");

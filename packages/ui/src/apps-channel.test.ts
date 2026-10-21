@@ -188,6 +188,29 @@ describe("MCP bridge", () => {
     expect(params("ui/message")).toEqual([{ role: "user", content: [{ type: "text", text: "Show Josh Davis" }] }]);
   });
 
+  it("asks the host for another display mode and reports the mode it is in, and passes on the modes on offer", async () => {
+    const { host, sent } = fakeHost({
+      "ui/initialize": () => ({
+        hostContext: { displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] },
+      }),
+      "ui/request-display-mode": (params) => ({ mode: (params as { mode: string }).mode }),
+    });
+    const bridge = createMcpBridge(open(host));
+    await bridge.connect();
+    expect(bridge.host().availableDisplayModes).toEqual(["inline", "fullscreen"]);
+    await expect(bridge.requestDisplayMode?.("fullscreen")).resolves.toBe("fullscreen");
+    expect(sent.filter((m) => m.method === "ui/request-display-mode").map((m) => m.params)).toEqual([
+      { mode: "fullscreen" },
+    ]);
+  });
+
+  it("tells the view when the host cannot change display modes", async () => {
+    const { host } = fakeHost({ "ui/initialize": () => ({ hostContext: {} }) });
+    const bridge = createMcpBridge(open(host, 50));
+    await bridge.connect();
+    await expect(bridge.requestDisplayMode?.("fullscreen")).rejects.toMatchObject({ kind: "host" });
+  });
+
   it("tells the view when the host cannot save a file or post a message, or declines to", async () => {
     const { host } = fakeHost({
       "ui/initialize": () => ({ hostContext: {} }),

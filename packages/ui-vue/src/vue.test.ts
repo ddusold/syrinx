@@ -226,7 +226,7 @@ describe("Vue views", () => {
 describe("ViewFrame", () => {
   const Framed = defineComponent(() => () => h(ViewFrame, null, () => h("p", { class: "content" }, "inside")));
 
-  async function frameStyle(host: HostContext, props?: { maxHeight: number }) {
+  async function frameStyle(host: HostContext, props?: { maxHeight?: number; natural?: boolean }) {
     document.body.innerHTML = `<div id="root"></div>`;
     const element = must(document.querySelector<HTMLElement>("#root"));
     const framed = props ? defineComponent(() => () => h(ViewFrame, props, () => h("p", "x"))) : Framed;
@@ -259,6 +259,13 @@ describe("ViewFrame", () => {
     const fullscreen = await frameStyle({ displayMode: "fullscreen", containerDimensions: { maxHeight: 480 } });
     expect(fullscreen.style.maxHeight).toBe("");
     expect(fullscreen.style.overflowY).toBe("");
+  });
+
+  it("does not cap on a mobile host or when the view asks for its natural height, so the chat is the only thing that scrolls", async () => {
+    expect((await frameStyle({ displayMode: "inline", platform: "mobile" })).style.maxHeight).toBe("");
+    const natural = await frameStyle({ displayMode: "inline", platform: "desktop" }, { natural: true });
+    expect(natural.style.maxHeight).toBe("");
+    expect(natural.style.overflowY).toBe("");
   });
 });
 

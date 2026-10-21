@@ -324,17 +324,19 @@ export const Embed = defineComponent({
  * the viewport is the frame and the view can only grow. The cap is `maxHeight` (default 640px), lowered to the host's
  * `containerDimensions.maxHeight` when that is smaller: a host's generous limit does not lift it. The cap is also set
  * as `--frame-max-height` on the frame, so content that fills the space (a table) can size itself to fit instead of
- * scrolling inside a scrolling frame. In `fullscreen` (a page, or the host's fullscreen mode) there is no cap.
+ * scrolling inside a scrolling frame. In `fullscreen` (a page, or the host's fullscreen mode) there is no cap, and none
+ * on a `mobile` host either: a scroll area inside the chat's own fights it for the finger, so the view grows and the
+ * chat scrolls. `natural` asks for the same where the view knows better, such as a narrow list of cards.
  */
 export const ViewFrame = defineComponent({
   name: "ViewFrame",
-  props: { maxHeight: { type: Number, default: 640 } },
+  props: { maxHeight: { type: Number, default: 640 }, natural: { type: Boolean, default: false } },
   setup(props, { slots }) {
     const view = useView();
     return () => {
       const host = view.value.host;
       const cap =
-        host.displayMode === "fullscreen"
+        host.displayMode === "fullscreen" || host.platform === "mobile" || props.natural
           ? undefined
           : Math.min(props.maxHeight, host.containerDimensions?.maxHeight ?? Infinity);
       return h(

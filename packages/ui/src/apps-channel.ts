@@ -22,6 +22,7 @@ export const METHODS = {
   openLink: "ui/open-link",
   downloadFile: "ui/download-file",
   message: "ui/message",
+  requestDisplayMode: "ui/request-display-mode",
   callTool: "tools/call",
   ping: "ping",
 } as const;
@@ -30,6 +31,7 @@ export const METHODS = {
 export interface AppsHostContext {
   theme?: "light" | "dark";
   displayMode?: "inline" | "fullscreen" | "pip";
+  availableDisplayModes?: ("inline" | "fullscreen" | "pip")[];
   containerDimensions?: { width?: number; maxWidth?: number; height?: number; maxHeight?: number };
   safeAreaInsets?: { top: number; right: number; bottom: number; left: number };
   locale?: string;

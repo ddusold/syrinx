@@ -13,6 +13,7 @@ import {
   type HostContext,
   type MountedView,
   type ViewEmit,
+  type DisplayMode,
   type ViewFile,
   type ViewModule,
   type ViewProps,
@@ -179,7 +180,7 @@ export async function startView(options: StartOptions): Promise<StartedView> {
     return { inputResponses, ...(input.requestState !== undefined ? { requestState: input.requestState } : {}) };
   };
 
-  const needs = <K extends "downloadFile" | "sendMessage">(method: K, what: string) => {
+  const needs = <K extends "downloadFile" | "sendMessage" | "requestDisplayMode">(method: K, what: string) => {
     const fn = bridge[method];
     if (!fn) throw new ViewCallError("unreachable", `Where this view runs, it cannot ${what}.`);
     return fn.bind(bridge) as NonNullable<HostBridge[K]>;
@@ -225,6 +226,7 @@ export async function startView(options: StartOptions): Promise<StartedView> {
     openLink: (url) => bridge.openLink(url),
     downloadFile: async (file: ViewFile) => needs("downloadFile", "save files")(file),
     sendMessage: async (text: string) => needs("sendMessage", "post a message to a chat")(text),
+    requestDisplayMode: async (mode: DisplayMode) => needs("requestDisplayMode", "change how it is shown")(mode),
   });
 
   const refresh = async () => {

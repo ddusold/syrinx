@@ -2,9 +2,14 @@ import type { FieldIssue, ViewResultMeta } from "@syrinx/core";
 import type { ContextScope } from "./context.js";
 
 /** What the host tells a view about where it is drawn. Every field is optional; hosts fill what they know. */
+/** How a host presents a view: in the conversation, over the whole window, or floating. */
+export type DisplayMode = "inline" | "fullscreen" | "pip";
+
 export interface HostContext {
   theme?: "light" | "dark";
-  displayMode?: "inline" | "fullscreen" | "pip";
+  displayMode?: DisplayMode;
+  /** The modes the host can show the view in, when it says (`requestDisplayMode` asks for one of them). */
+  availableDisplayModes?: readonly DisplayMode[];
   /** Fixed or maximum sizes of the container the view sits in, in CSS pixels. */
   containerDimensions?: { width?: number; maxWidth?: number; height?: number; maxHeight?: number };
   safeAreaInsets?: { top: number; right: number; bottom: number; left: number };
@@ -40,6 +45,12 @@ export interface ViewEmit {
    * user declines.
    */
   downloadFile(file: ViewFile): Promise<void>;
+  /**
+   * Asks the host to show the view in another display mode (`fullscreen` for a screen of its own to browse in) and
+   * resolves with the mode it is now in, which is the current one when the host declines. Rejects where the host cannot
+   * change modes at all; check `host.availableDisplayModes` first to offer the option only where it can be taken.
+   */
+  requestDisplayMode(mode: DisplayMode): Promise<DisplayMode>;
   /**
    * Posts a message to the host's chat as the user, which Claude then answers, possibly by calling a tool whose result
    * appears as a new view in the conversation. Optional in the protocol: rejects where the host does not support it,
@@ -173,6 +184,7 @@ export interface HostBridge {
   onResult(listener: (result: BridgeResult) => void): void;
   /** Saves a file through the host. Absent where the bridge cannot (the gallery preview). */
   downloadFile?(file: ViewFile): Promise<void>;
+  requestDisplayMode?(mode: DisplayMode): Promise<DisplayMode>;
   /** Posts a chat message through the host. Absent where there is no chat. */
   sendMessage?(text: string): Promise<void>;
   /**

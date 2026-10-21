@@ -18,6 +18,7 @@ export type { StartedView, StartOptions } from "./runtime.js";
 export { ViewCallError } from "./types.js";
 export type {
   BridgeResult,
+  DisplayMode,
   HostBridge,
   HostContext,
   InputAnswer,
