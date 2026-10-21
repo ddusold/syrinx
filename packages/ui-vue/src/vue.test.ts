@@ -7,10 +7,24 @@ import {
   type HostBridge,
   type HostContext,
   type ViewModule,
+  ViewCallError,
 } from "@syrinx/ui";
-import { describe, expect, it, vi } from "vitest";
-import { defineComponent, h, nextTick } from "vue";
-import { Embed, toView, useView, useViewContext, ViewContext, ViewFrame, ViewPart } from "./index.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createApp, defineComponent, h, nextTick } from "vue";
+import {
+  Embed,
+  mountVueView,
+  toView,
+  useView,
+  useViewAction,
+  useViewContext,
+  useViewPoll,
+  ViewContext,
+  ViewFrame,
+  ViewPart,
+  ViewPending,
+  ViewSkeleton,
+} from "./index.js";
 
 interface Payload {
   items: { id: string; customer: string }[];
@@ -245,5 +259,225 @@ describe("ViewFrame", () => {
     const fullscreen = await frameStyle({ displayMode: "fullscreen", containerDimensions: { maxHeight: 480 } });
     expect(fullscreen.style.maxHeight).toBe("");
     expect(fullscreen.style.overflowY).toBe("");
+  });
+});
+
+/** Runs a composable inside a component, as a template would, and hands back what it returned. */
+function inComponent<T>(setup: () => T) {
+  let result: T | undefined;
+  const app = createApp(
+    defineComponent(() => {
+      result = setup();
+      return () => h("div");
+    }),
+  );
+  app.mount(document.createElement("div"));
+  return {
+    result: result as T,
+    unmount: () => {
+      app.unmount();
+    },
+  };
+}
+
+describe("useViewAction", () => {
+  it("tracks a running action, keeps its failure instead of throwing, and clears it on the next run", async () => {
+    let release: (value: string) => void = () => undefined;
+    let fail: (error: Error) => void = () => undefined;
+    const { result: action } = inComponent(() =>
+      useViewAction(
+        (mode: "ok" | "fail") =>
+          new Promise<string>((resolve, reject) => {
+            release = resolve;
+            fail = reject;
+            expect(["ok", "fail"]).toContain(mode);
+          }),
+      ),
+    );
+    const first = action.run("ok");
+    expect(action.pending.value).toBe(true);
+    release("done");
+    await expect(first).resolves.toBe("done");
+    expect(action.pending.value).toBe(false);
+    expect(action.error.value).toBeUndefined();
+
+    const second = action.run("fail");
+    fail(new ViewCallError("forbidden", "Not allowed."));
+    await expect(second).resolves.toBeUndefined();
+    expect(action.error.value).toMatchObject({ kind: "forbidden", message: "Not allowed." });
+
+    const third = action.run("ok");
+    expect(action.error.value).toBeUndefined();
+    release("again");
+    await third;
+
+    const fourth = action.run("fail");
+    fail(new Error("boom"));
+    await fourth;
+    expect(action.error.value).toMatchObject({ kind: "internal", message: "boom" });
+  });
+});
+
+describe("useViewPoll", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("polls until the result says it is done, backing off as told, and stops there", async () => {
+    vi.useFakeTimers();
+    const statuses = ["pending", "running", "complete", "never"];
+    const poll = vi.fn(() => Promise.resolve({ status: statuses[poll.mock.calls.length - 1] }));
+    const waits: number[] = [];
+    const { result } = inComponent(() =>
+      useViewPoll(poll, {
+        until: (job) => job.status === "complete",
+        interval: (attempt) => (waits.push(attempt), 100 * attempt),
+      }),
+    );
+    result.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poll).toHaveBeenCalledTimes(1);
+    expect(result.polling.value).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(poll).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(poll).toHaveBeenCalledTimes(3);
+    expect(result.data.value).toEqual({ status: "complete" });
+    expect(result.polling.value).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(poll).toHaveBeenCalledTimes(3);
+    expect(waits).toEqual([1, 2]);
+  });
+
+  it("stops on a failure and keeps it, stops when the component goes, and caps the attempts", async () => {
+    vi.useFakeTimers();
+    const failing = vi.fn(() => Promise.reject(new ViewCallError("not_found", "Gone.")));
+    const a = inComponent(() => useViewPoll(failing, { interval: 10 }));
+    a.result.start();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(failing).toHaveBeenCalledTimes(1);
+    expect(a.result.error.value).toMatchObject({ kind: "not_found" });
+    expect(a.result.polling.value).toBe(false);
+
+    const steady = vi.fn(() => Promise.resolve(1));
+    const b = inComponent(() => useViewPoll(steady, { interval: 10 }));
+    b.result.start();
+    await vi.advanceTimersByTimeAsync(25);
+    const seen = steady.mock.calls.length;
+    b.unmount();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(steady.mock.calls.length).toBe(seen);
+
+    const capped = vi.fn(() => Promise.resolve(1));
+    const c = inComponent(() => useViewPoll(capped, { interval: 1, maxAttempts: 3 }));
+    c.result.start();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(capped).toHaveBeenCalledTimes(3);
+    expect(c.result.polling.value).toBe(false);
+  });
+
+  it("waits the first interval before polling when asked not to poll straight away", async () => {
+    vi.useFakeTimers();
+    const poll = vi.fn(() => Promise.resolve(1));
+    const { result } = inComponent(() => useViewPoll(poll, { interval: 50, immediate: false, until: () => true }));
+    result.start();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(poll).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(poll).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("loading components", () => {
+  it("draws skeleton rows with a status role, in the sizes asked for", async () => {
+    document.body.innerHTML = `<div id="root"></div>`;
+    createApp({
+      render: () => h(ViewSkeleton, { rows: 4, height: 12, widths: [100, 50], label: "Loading exports" }),
+    }).mount("#root");
+    await nextTick();
+    const status = must(document.querySelector<HTMLElement>("[role=status]"));
+    expect(status.getAttribute("aria-label")).toBe("Loading exports");
+    const rows = Array.from(status.querySelectorAll<HTMLElement>(".syrinx-skeleton-row"));
+    expect(rows.map((r) => r.style.width)).toEqual(["100%", "50%", "100%", "50%"]);
+    expect(rows[0]?.style.height).toBe("12px");
+    expect(document.getElementById("syrinx-ui-vue-styles")).not.toBeNull();
+  });
+
+  it("covers its content while one of the view's calls is in flight, and only for the calls it is told about", async () => {
+    document.body.innerHTML = `<div id="root"></div>`;
+    let release: (result: BridgeResult) => void = () => undefined;
+    const b: HostBridge = {
+      connect: () => Promise.resolve(),
+      host: () => ({}),
+      onHostContext: () => undefined,
+      onResult: () => undefined,
+      call: () => new Promise<BridgeResult>((resolve) => (release = resolve)),
+      openLink: () => Promise.resolve(),
+    };
+    const View = defineComponent(
+      () => () =>
+        h(ViewPending, { ops: ["new"], label: "Opening export…" }, () => h("p", { class: "inner" }, "content")),
+    );
+    const started = await startView({
+      views: { "invoices/browser": toView(View) },
+      boot: { ...boot, operations: { "invoices.new": { tool: "n" }, "invoices.other": { tool: "o" } } },
+      bridge: b,
+      element: must(document.querySelector<HTMLElement>("#root")),
+    });
+    await nextTick();
+    expect(document.querySelector("[role=status]")).toBeNull();
+
+    const other = started.props().emit.call("other");
+    await nextTick();
+    expect(document.querySelector("[role=status]")).toBeNull();
+    release({ data: {} });
+    await other;
+
+    const opening = started.props().emit.call("new");
+    await nextTick();
+    expect(document.querySelector("[role=status]")?.textContent).toContain("Opening export…");
+    expect(document.querySelector(".inner")?.textContent).toBe("content");
+    release({ data: {} });
+    await opening;
+    await nextTick();
+    expect(document.querySelector("[role=status]")).toBeNull();
+  });
+});
+
+describe("mountVueView", () => {
+  it("mounts a view over REST in one call, and opens it on an operation", async () => {
+    document.body.innerHTML = `<div id="root"></div>`;
+    const requests: { url: string; body: unknown }[] = [];
+    const fetchFn = ((url: string, init: RequestInit) => {
+      requests.push({ url, body: JSON.parse(init.body as string) });
+      return Promise.resolve(
+        new Response(JSON.stringify({ resultType: "complete", data: { items: [{ id: "inv_1" }] } }), { status: 200 }),
+      );
+    }) as typeof fetch;
+    const View = defineComponent(() => {
+      const view = useView<{ items: { id: string }[] }>();
+      return () =>
+        h(
+          "ul",
+          (view.value.data?.items ?? []).map((i) => h("li", i.id)),
+        );
+    });
+    const mounted = await mountVueView({
+      view: "invoices/browser",
+      component: View,
+      element: must(document.querySelector<HTMLElement>("#root")),
+      base: "/api/invoices/ops",
+      bound: { list: undefined },
+      operations: ["list"],
+      fetch: fetchFn,
+      host: { theme: "light", displayMode: "fullscreen" },
+    });
+    await mounted.show("list", { status: "open" });
+    await nextTick();
+    expect(requests).toEqual([{ url: "/api/invoices/ops/list", body: { status: "open" } }]);
+    expect(document.querySelector("#root li")?.textContent).toBe("inv_1");
+    mounted.unmount();
+    await nextTick();
+    expect(document.querySelector("#root li")).toBeNull();
   });
 });

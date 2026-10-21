@@ -167,6 +167,42 @@ describe("MCP bridge", () => {
     expect(sent.find((m) => m.method === "ui/open-link")?.params).toEqual({ url: "https://example.com" });
   });
 
+  it("hands the host a file as an embedded resource, and a chat message as the user's", async () => {
+    const { host, sent } = fakeHost({
+      "ui/initialize": () => ({ hostContext: {} }),
+      "ui/download-file": () => ({}),
+      "ui/message": () => ({}),
+    });
+    const bridge = createMcpBridge(open(host));
+    await bridge.connect();
+    await bridge.downloadFile?.({ name: "contacts.csv", mimeType: "text/csv", text: "a,b" });
+    await bridge.downloadFile?.({ name: "logo.png", mimeType: "image/png", base64: "AAEC" });
+    await bridge.sendMessage?.("Show Josh Davis");
+    const params = (method: string) => sent.filter((m) => m.method === method).map((m) => m.params);
+    expect(params("ui/download-file")).toEqual([
+      {
+        contents: [{ type: "resource", resource: { uri: "file:///contacts.csv", mimeType: "text/csv", text: "a,b" } }],
+      },
+      { contents: [{ type: "resource", resource: { uri: "file:///logo.png", mimeType: "image/png", blob: "AAEC" } }] },
+    ]);
+    expect(params("ui/message")).toEqual([{ role: "user", content: [{ type: "text", text: "Show Josh Davis" }] }]);
+  });
+
+  it("tells the view when the host cannot save a file or post a message, or declines to", async () => {
+    const { host } = fakeHost({
+      "ui/initialize": () => ({ hostContext: {} }),
+      "ui/download-file": () => ({ isError: true }),
+    });
+    // ui/message is not answered: a real host without it replies "method not found"; here the request times out sooner.
+    const bridge = createMcpBridge(open(host, 50));
+    await bridge.connect();
+    await expect(bridge.downloadFile?.({ name: "a.csv", mimeType: "text/csv", text: "x" })).rejects.toMatchObject({
+      kind: "host",
+      message: expect.stringContaining("declined") as string,
+    });
+    await expect(bridge.sendMessage?.("hi")).rejects.toMatchObject({ kind: "host" });
+  });
+
   it("leaves the host's variables alone when the view ignores host styles", async () => {
     const { host } = fakeHost({
       "ui/initialize": () => ({

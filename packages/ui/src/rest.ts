@@ -121,6 +121,17 @@ export function createRestBridge(options: RestBridgeOptions): HostBridge {
       window.open(url, "_blank", "noopener");
       return Promise.resolve();
     },
+    // A page can start a download itself. There is no chat to post a message to, so `sendMessage` is left out.
+    downloadFile: (file) => {
+      const bytes = file.base64 === undefined ? undefined : Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes ?? file.text ?? ""], { type: file.mimeType }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = file.name;
+      link.click();
+      URL.revokeObjectURL(url);
+      return Promise.resolve();
+    },
   };
 }
 

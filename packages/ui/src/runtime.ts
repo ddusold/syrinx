@@ -13,6 +13,7 @@ import {
   type HostContext,
   type MountedView,
   type ViewEmit,
+  type ViewFile,
   type ViewModule,
   type ViewProps,
   type ViewRuntime,
@@ -56,10 +57,18 @@ function applyTheme(host: HostContext) {
   document.documentElement.style.colorScheme = host.theme;
 }
 
+/** A call the view can return to: what produced the view before a navigation. */
+interface HistoryEntry {
+  app: string;
+  op: string;
+  input: unknown;
+}
+
 /**
  * Starts a view bundle: connects to the host, mounts the root view, and re-renders it when the host delivers new
- * data or context. Results of the root view's bound operations, whether the host pushes them or the view calls
- * them itself, replace its data.
+ * data or context. Results of bound operations, whether the host pushes them or the view calls them itself, replace
+ * what the view shows: its data, and, when the result belongs to another view the bundle carries (an embed), the view
+ * itself, so one frame can move between views and parts and come back with `back()`.
  */
 export async function startView(options: StartOptions): Promise<StartedView> {
   const boot = options.boot ?? readBoot();
@@ -69,10 +78,17 @@ export async function startView(options: StartOptions): Promise<StartedView> {
   const bridge =
     options.bridge ??
     (boot.channel === "preview" ? createPreviewBridge(boot) : createMcpBridge({}, { hostStyles: boot.hostStyles }));
-  const root = options.views[boot.view];
-  if (!root) throw new Error(`The bundle has no module for view ${boot.view}.`);
-  // The root renders prompts for itself and everything embedded in it, so its calls can ask inside the view.
-  const viewCall = root.handlesPrompts === true && boot.viewCallTool ? { viewCall: boot.viewCallTool } : {};
+  const rootModule = options.views[boot.view];
+  if (!rootModule) throw new Error(`The bundle has no module for view ${boot.view}.`);
+
+  // The view showing now: the one the shell was made for, until a result belongs to another the bundle carries.
+  let current = boot.view;
+  const moduleOf = (view: string) => options.views[view];
+  // The shown view renders prompts for itself and everything embedded in it, so its calls can ask inside the view.
+  const viewCallFor = () => {
+    const module = moduleOf(current);
+    return module?.handlesPrompts === true && boot.viewCallTool ? { viewCall: boot.viewCallTool } : {};
+  };
 
   const state: {
     data: unknown;
@@ -86,8 +102,27 @@ export async function startView(options: StartOptions): Promise<StartedView> {
     host: {},
   };
   let mounted: MountedView | undefined;
-  // The input of the call that produced `state.data`, for `refresh`; unset when the host opened the view and did not say.
+  const element = options.element ?? document.getElementById(ROOT_ELEMENT_ID) ?? document.body;
+  // The input of the call that produced `state.data`, for `refresh` and `back`; unset when the host opened the view and
+  // did not say.
   let sourceInput: { value: unknown } | undefined;
+  const history: HistoryEntry[] = [];
+  let goingBack = false;
+  const pending: string[] = [];
+
+  const update = () => {
+    mounted?.update(rootProps());
+  };
+
+  /** Shows `view` in the frame in place of the one showing: its module is mounted fresh, with the props as they stand. */
+  const switchTo = (view: string) => {
+    if (view === current) return;
+    current = view;
+    const module = moduleOf(view);
+    if (!module) return;
+    mounted?.unmount();
+    mounted = module.mount(element, rootProps());
+  };
 
   const apply = (result: BridgeResult) => {
     if (result.error) {
@@ -104,9 +139,13 @@ export async function startView(options: StartOptions): Promise<StartedView> {
         if (expected && expected !== meta.schemaVersion) {
           console.warn(`[syrinx] ${meta.view} was built for another version of ${meta.op}'s output; reload the view.`);
         }
+        if (moduleOf(meta.view) && meta.view !== current) {
+          switchTo(meta.view);
+          return;
+        }
       }
     }
-    mounted?.update(rootProps());
+    update();
   };
 
   // Questions wait in line: one prompt shows at a time, whichever call asked.
@@ -120,11 +159,11 @@ export async function startView(options: StartOptions): Promise<StartedView> {
             fields,
             answer: (answer) => {
               delete state.prompt;
-              mounted?.update(rootProps());
+              update();
               resolve(answer);
             },
           };
-          mounted?.update(rootProps());
+          update();
         }),
     );
     asking = answered;
@@ -140,43 +179,49 @@ export async function startView(options: StartOptions): Promise<StartedView> {
     return { inputResponses, ...(input.requestState !== undefined ? { requestState: input.requestState } : {}) };
   };
 
+  const needs = <K extends "downloadFile" | "sendMessage">(method: K, what: string) => {
+    const fn = bridge[method];
+    if (!fn) throw new ViewCallError("unreachable", `Where this view runs, it cannot ${what}.`);
+    return fn.bind(bridge) as NonNullable<HostBridge[K]>;
+  };
+
   const emitFor = (app: string): ViewEmit => ({
     async call<T>(operation: string, input: unknown = {}) {
       const route = boot.operations[`${app}.${operation}`];
       if (!route) {
         throw new ViewCallError("unreachable", `${app}.${operation} is not served where this view runs.`);
       }
-      let result = await bridge.call(route.tool, input, { app, operation, ...viewCall });
-      for (let round = 1; result.input; round++) {
-        if (round > MAX_ROUNDS) throw new ViewCallError("internal", `${app}.${operation} kept asking for input.`);
-        const resume = await answerAll(result.input);
-        result = await bridge.call(route.tool, input, { app, operation, resume, ...viewCall });
+      pending.push(operation);
+      update();
+      try {
+        let result = await bridge.call(route.tool, input, { app, operation, ...viewCallFor() });
+        for (let round = 1; result.input; round++) {
+          if (round > MAX_ROUNDS) throw new ViewCallError("internal", `${app}.${operation} kept asking for input.`);
+          const resume = await answerAll(result.input);
+          result = await bridge.call(route.tool, input, { app, operation, resume, ...viewCallFor() });
+        }
+        if (result.error) throw result.error;
+        if (result.view && moduleOf(result.view.view)) {
+          // Moving to another view or part leaves a way back, when what is leaving can be repeated.
+          const meta = result.view;
+          const navigates = meta.view !== current || meta.component !== state.component;
+          if (navigates && !goingBack && state.source && sourceInput) {
+            history.push({ app: appOf(current), op: state.source.op, input: sourceInput.value });
+          }
+          apply(result);
+          sourceInput = { value: input };
+        }
+        return result.data as T;
+      } finally {
+        pending.splice(pending.indexOf(operation), 1);
+        update();
       }
-      if (result.error) throw result.error;
-      if (result.view?.view === boot.view) {
-        apply(result);
-        sourceInput = { value: input };
-      }
-      return result.data as T;
     },
     openLink: (url) => bridge.openLink(url),
+    downloadFile: async (file: ViewFile) => needs("downloadFile", "save files")(file),
+    sendMessage: async (text: string) => needs("sendMessage", "post a message to a chat")(text),
   });
 
-  const runtime: ViewRuntime = {
-    views: options.views,
-    childProps: (view, data, contexts) => ({
-      view,
-      data,
-      features: boot.features[view] ?? {},
-      host: state.host,
-      emit: emitFor(appOf(view)),
-      refresh: () => refresh(),
-      contexts,
-      runtime,
-    }),
-  };
-
-  const rootEmit = emitFor(appOf(boot.view));
   const refresh = async () => {
     const source = state.source;
     if (!source)
@@ -187,13 +232,54 @@ export async function startView(options: StartOptions): Promise<StartedView> {
         `The input of ${source.op} is not known where this view runs, so it cannot be repeated.`,
       );
     }
-    await rootEmit.call(source.op, sourceInput.value);
+    await emitFor(appOf(current)).call(source.op, sourceInput.value);
   };
+
+  const back = async () => {
+    const entry = history.pop();
+    if (!entry) throw new ViewCallError("unreachable", "There is nothing to go back to.");
+    goingBack = true;
+    try {
+      await emitFor(entry.app).call(entry.op, entry.input);
+    } catch (error) {
+      history.push(entry);
+      throw error;
+    } finally {
+      goingBack = false;
+    }
+  };
+
+  const remember = (input: unknown) => {
+    sourceInput = { value: input };
+  };
+
+  const runtime: ViewRuntime = {
+    views: options.views,
+    childProps: (view, data, contexts) => ({
+      view,
+      data,
+      features: boot.features[view] ?? {},
+      host: state.host,
+      emit: emitFor(appOf(view)),
+      pending,
+      canGoBack: history.length > 0,
+      back,
+      remember,
+      refresh,
+      contexts,
+      runtime,
+    }),
+  };
+
   const rootProps = (contexts: ContextScope = emptyScope): ViewProps => ({
     ...state,
-    view: boot.view,
-    features: boot.features[boot.view] ?? {},
-    emit: rootEmit,
+    view: current,
+    features: boot.features[current] ?? {},
+    emit: emitFor(appOf(current)),
+    pending: [...pending],
+    canGoBack: history.length > 0,
+    back,
+    remember,
     refresh,
     contexts,
     runtime,
@@ -202,20 +288,19 @@ export async function startView(options: StartOptions): Promise<StartedView> {
   // Listen before connecting: hosts may deliver the opening result as soon as the handshake ends.
   bridge.onResult((result) => {
     // The host opened the view (or pushed new data): what it reports as the call's arguments is the refresh input.
-    if (result.view?.view === boot.view && bridge.toolInput) sourceInput = { value: bridge.toolInput() };
+    if (result.view && moduleOf(result.view.view) && bridge.toolInput) sourceInput = { value: bridge.toolInput() };
     apply(result);
   });
   bridge.onHostContext((host) => {
     state.host = host;
     applyTheme(host);
-    mounted?.update(rootProps());
+    update();
   });
   await bridge.connect();
   state.host = bridge.host();
   applyTheme(state.host);
 
-  const element = options.element ?? document.getElementById(ROOT_ELEMENT_ID) ?? document.body;
-  mounted = root.mount(element, rootProps());
+  mounted = rootModule.mount(element, rootProps());
   return {
     props: () => rootProps(),
     unmount: () => {

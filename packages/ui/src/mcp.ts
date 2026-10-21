@@ -175,5 +175,31 @@ export function createMcpBridge(
     async openLink(url) {
       await apps.request(METHODS.openLink, { url });
     },
+    async downloadFile(file) {
+      // ui/download-file takes standard MCP resource contents: here one embedded resource with the bytes inline.
+      const uri = `file:///${encodeURIComponent(file.name)}`;
+      const resource =
+        file.base64 !== undefined
+          ? { uri, mimeType: file.mimeType, blob: file.base64 }
+          : { uri, mimeType: file.mimeType, text: file.text ?? "" };
+      await hostRequest(METHODS.downloadFile, { contents: [{ type: "resource", resource }] }, "download the file");
+    },
+    async sendMessage(text) {
+      await hostRequest(METHODS.message, { role: "user", content: [{ type: "text", text }] }, "send a message");
+    },
   };
+
+  /** A host that lacks the method rejects it; one that has it can still decline (`isError`). Both reach the view alike. */
+  async function hostRequest(method: string, params: Record<string, unknown>, what: string) {
+    let result: { isError?: boolean };
+    try {
+      result = await apps.request<{ isError?: boolean }>(method, params);
+    } catch (error) {
+      throw new ViewCallError(
+        "host",
+        `This host cannot ${what}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (result.isError) throw new ViewCallError("host", `The host declined to ${what}.`);
+  }
 }

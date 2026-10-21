@@ -1,10 +1,17 @@
 import {
   createContextStore,
+  createRestBridge,
   emptyScope,
+  restBoot,
+  startView,
+  ViewCallError,
   type ContextScope,
   type ContextStore,
   type InputPrompt,
   type MountedView,
+  type RestBootOptions,
+  type RestBridgeOptions,
+  type StartedView,
   type ViewContextDef,
   type ViewModule,
   type ViewProps,
@@ -13,6 +20,7 @@ import {
   computed,
   createApp,
   defineComponent,
+  getCurrentInstance,
   h,
   hasInjectionContext,
   inject,
@@ -360,3 +368,253 @@ export const ViewPart = defineComponent({
     return () => (!view.value.component || view.value.component === props.name ? slots.default?.() : null);
   },
 });
+
+/**
+ * Runs an async action with its state kept for the template: whether it is running, and what went wrong. `run` never
+ * throws; a failure lands in `error` (as a {@link ViewCallError}) and `run` resolves to undefined. Wrap a call to an
+ * operation (`useViewAction((input) => view.value.emit.call("create", input))`) and bind a button to `pending`.
+ */
+export function useViewAction<A extends unknown[], R>(action: (...args: A) => Promise<R>) {
+  const pending = ref(false);
+  const error = shallowRef<ViewCallError>();
+  const run = async (...args: A): Promise<R | undefined> => {
+    pending.value = true;
+    error.value = undefined;
+    try {
+      return await action(...args);
+    } catch (caught) {
+      error.value =
+        caught instanceof ViewCallError
+          ? caught
+          : new ViewCallError("internal", caught instanceof Error ? caught.message : String(caught));
+      return undefined;
+    } finally {
+      pending.value = false;
+    }
+  };
+  return { run, pending, error, reset: () => (error.value = undefined) };
+}
+
+export interface ViewPollOptions<T> {
+  /** Stops polling when this is true of a result, such as a job that is no longer running. */
+  until?: (value: T) => boolean;
+  /** Milliseconds between polls, or a function of the poll's number (1 for the first) to back off. Defaults to 1500. */
+  interval?: number | ((attempt: number) => number);
+  /** Poll once straight away rather than after the first interval. Defaults to true. */
+  immediate?: boolean;
+  /** Stop after this many polls. Defaults to 120. */
+  maxAttempts?: number;
+}
+
+/**
+ * Calls `poll` again and again until `until` says it is done, for work the server does after answering (an export, an
+ * import). Stops on its own when the component unmounts, on the first failure (the error is kept; call `start` to try
+ * again) and after `maxAttempts`. `data` is the latest result.
+ */
+export function useViewPoll<T>(poll: () => Promise<T>, options: ViewPollOptions<T> = {}) {
+  const data = shallowRef<T>();
+  const error = shallowRef<ViewCallError>();
+  const polling = ref(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let run = 0;
+
+  const stop = () => {
+    run += 1;
+    clearTimeout(timer);
+    polling.value = false;
+  };
+
+  const start = () => {
+    stop();
+    const mine = run;
+    polling.value = true;
+    error.value = undefined;
+    let attempt = 0;
+    const delay = () =>
+      typeof options.interval === "function" ? options.interval(attempt) : (options.interval ?? 1500);
+    const tick = async () => {
+      attempt += 1;
+      try {
+        const value = await poll();
+        if (mine !== run) return;
+        data.value = value;
+        if (options.until?.(value) || attempt >= (options.maxAttempts ?? 120)) {
+          stop();
+          return;
+        }
+      } catch (caught) {
+        if (mine !== run) return;
+        error.value =
+          caught instanceof ViewCallError
+            ? caught
+            : new ViewCallError("internal", caught instanceof Error ? caught.message : String(caught));
+        stop();
+        return;
+      }
+      timer = setTimeout(() => void tick(), delay());
+    };
+    if (options.immediate === false) timer = setTimeout(() => void tick(), delay());
+    else void tick();
+  };
+
+  if (getCurrentInstance()) onUnmounted(stop);
+  return { data, error, polling, start, stop };
+}
+
+const STYLE_ID = "syrinx-ui-vue-styles";
+/** The little CSS the loading components need, added to the page once; kept here so they work without a stylesheet. */
+function ensureStyles() {
+  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = STYLE_ID;
+  style.textContent = [
+    "@keyframes syrinx-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}",
+    "@keyframes syrinx-spin{to{transform:rotate(360deg)}}",
+    ".syrinx-skeleton-row{border-radius:6px;background:linear-gradient(90deg,rgba(128,128,128,.14) 25%,rgba(128,128,128,.26) 37%,rgba(128,128,128,.14) 63%);background-size:400% 100%;animation:syrinx-shimmer 1.4s ease infinite}",
+    "@media (prefers-reduced-motion:reduce){.syrinx-skeleton-row{animation:none}.syrinx-spinner{animation:none!important}}",
+  ].join("");
+  document.head.appendChild(style);
+}
+
+/**
+ * A placeholder for content that has not arrived: shimmering rows the size of what is coming, so the view does not jump
+ * when it does. `rows` rows of `height` px; `widths` varies them (percentages, repeating) to look like text.
+ */
+export const ViewSkeleton = defineComponent({
+  name: "ViewSkeleton",
+  props: {
+    rows: { type: Number, default: 3 },
+    height: { type: Number, default: 16 },
+    gap: { type: Number, default: 10 },
+    widths: { type: Array as PropType<number[]>, default: () => [100, 85, 92] },
+    label: { type: String, default: "Loading" },
+  },
+  setup(props) {
+    ensureStyles();
+    return () =>
+      h(
+        "div",
+        {
+          role: "status",
+          "aria-busy": "true",
+          "aria-label": props.label,
+          style: { display: "grid", gap: `${props.gap}px` },
+        },
+        Array.from({ length: props.rows }, (_, i) =>
+          h("div", {
+            class: "syrinx-skeleton-row",
+            style: { height: `${props.height}px`, width: `${props.widths[i % props.widths.length] ?? 100}%` },
+          }),
+        ),
+      );
+  },
+});
+
+/**
+ * Covers its content with a veil and a spinner while the view has called one of `ops` and the call has not come back.
+ * Wrap what a navigating call will replace: the click that starts it gets an answer at once, where the view would
+ * otherwise sit unchanged until the result arrives. Reads `pending` from the view; or force it with `active`.
+ */
+export const ViewPending = defineComponent({
+  name: "ViewPending",
+  props: {
+    ops: { type: Array as PropType<string[]>, default: () => [] },
+    active: { type: Boolean, default: undefined },
+    label: { type: String, default: "Loading" },
+  },
+  setup(props, { slots }) {
+    ensureStyles();
+    const view = useView();
+    const busy = computed(
+      () => props.active ?? view.value.pending.some((op) => props.ops.length === 0 || props.ops.includes(op)),
+    );
+    return () =>
+      h("div", { style: { position: "relative" }, "aria-busy": busy.value ? "true" : undefined }, [
+        slots.default?.(),
+        busy.value
+          ? h(
+              "div",
+              {
+                role: "status",
+                "aria-label": props.label,
+                style: {
+                  position: "absolute",
+                  inset: "0",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "10px",
+                  background: "color-mix(in srgb, Canvas 72%, transparent)",
+                  zIndex: "20",
+                },
+              },
+              [
+                h("div", {
+                  class: "syrinx-spinner",
+                  style: {
+                    width: "26px",
+                    height: "26px",
+                    border: "3px solid rgba(128,128,128,.35)",
+                    borderTopColor: "currentColor",
+                    borderRadius: "50%",
+                    animation: "syrinx-spin .8s linear infinite",
+                  },
+                }),
+                props.label ? h("span", { style: { fontSize: "13px", opacity: "0.8" } }, props.label) : null,
+              ],
+            )
+          : null,
+      ]);
+  },
+});
+
+export interface MountVueViewOptions extends Omit<RestBridgeOptions, "view" | "bound"> {
+  /** The root view, `app/view`. */
+  view: string;
+  /** The root view's component. */
+  component: Component;
+  /** Other views of the bundle, by `app/view`, that results can move the frame to. */
+  views?: Record<string, Component>;
+  /** The operations that render the view, and the part each shows (see {@link RestBridgeOptions.bound}). */
+  bound: RestBridgeOptions["bound"];
+  /** Every operation the view may call, by name or `app.operation`. */
+  operations: RestBootOptions["operations"];
+  features?: RestBootOptions["features"];
+  hostStyles?: RestBootOptions["hostStyles"];
+  /** Where to mount: a modal's body, a drawer, any element. */
+  element: HTMLElement;
+}
+
+export interface MountedVueView {
+  started: StartedView;
+  /** Calls an operation as the view would, showing its result in the view when the operation is bound to it. */
+  show<T = unknown>(operation: string, input?: unknown): Promise<T>;
+  unmount(): void;
+}
+
+/**
+ * Mounts a Vue view in a page that talks to the REST API, in one call: the bridge, the boot data and the runtime. For a
+ * view in a modal or drawer of an ordinary site (the same view an MCP host shows in its frame). Then `show` opens it on
+ * an operation: `await mounted.show("new", { filter })`. Unmount when the modal closes.
+ */
+export async function mountVueView(options: MountVueViewOptions): Promise<MountedVueView> {
+  const { view, component, views, bound, operations, features, hostStyles, element, ...bridgeOptions } = options;
+  const bridge = createRestBridge({ ...bridgeOptions, view, bound });
+  const started = await startView({
+    views: {
+      [view]: toView(component),
+      ...Object.fromEntries(Object.entries(views ?? {}).map(([id, c]) => [id, toView(c)])),
+    },
+    boot: restBoot({ view, operations, ...(features ? { features } : {}), ...(hostStyles ? { hostStyles } : {}) }),
+    bridge,
+    element,
+  });
+  return {
+    started,
+    show: <T = unknown>(operation: string, input: unknown = {}) => started.props().emit.call<T>(operation, input),
+    unmount: () => {
+      started.unmount();
+    },
+  };
+}

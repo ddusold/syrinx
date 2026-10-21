@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { defineApp, op } from "@syrinx/core";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { z } from "zod";
 import { createRestBridge, createRestClient, restBoot } from "./rest.js";
 import { ViewCallError } from "./types.js";
@@ -103,6 +103,35 @@ describe("REST bridge", () => {
     expect(["light", "dark"]).toContain(host.theme);
     const custom = createRestBridge({ ...options(fakeFetch(() => ({ body: {} })).fetchFn), host: { theme: "dark" } });
     expect(custom.host()).toEqual({ theme: "dark" });
+  });
+});
+
+describe("REST bridge downloads", () => {
+  it("saves a file from a page through a temporary link, and has no chat to post to", async () => {
+    const made: Blob[] = [];
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: (blob: Blob) => (made.push(blob), "blob:test"),
+      revokeObjectURL: vi.fn(),
+    });
+    const clicks: { href: string; download: string }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicks.push({ href: this.href, download: this.download });
+    });
+    try {
+      const bridge = createRestBridge(options(fakeFetch(() => ({ body: {} })).fetchFn));
+      await bridge.downloadFile?.({ name: "contacts.csv", mimeType: "text/csv", text: "a,b" });
+      expect(clicks).toEqual([{ href: "blob:test", download: "contacts.csv" }]);
+      expect(await made[0]?.text()).toBe("a,b");
+      expect(made[0]?.type).toBe("text/csv");
+
+      await bridge.downloadFile?.({ name: "x.bin", mimeType: "application/octet-stream", base64: "AAEC" });
+      expect(Array.from(new Uint8Array((await made[1]?.arrayBuffer()) ?? new ArrayBuffer(0)))).toEqual([0, 1, 2]);
+      expect("sendMessage" in bridge).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
   });
 });
 

@@ -320,6 +320,153 @@ describe("startView", () => {
     await expect(quiet.last()?.refresh()).rejects.toThrow(/input of list is not known/);
   });
 
+  /** Two views in one bundle, and a bridge whose answers tag results with the view they belong to. */
+  const twoViews = () => {
+    const calls: { tool: string; input: unknown }[] = [];
+    const bridge: HostBridge = {
+      connect: () => Promise.resolve(),
+      host: () => ({}),
+      onHostContext: () => undefined,
+      onResult: () => undefined,
+      call: (tool, input) => {
+        calls.push({ tool, input });
+        if (tool === "invoices_open") {
+          return Promise.resolve({
+            data: { name: "Acme" },
+            view: { view: "customers/badge", op: "get", schemaVersion: "" },
+          });
+        }
+        return Promise.resolve({
+          data: { items: [tool] },
+          view: { view: "invoices/browser", op: "list", schemaVersion: "" },
+        });
+      },
+      openLink: () => Promise.resolve(),
+    };
+    const unmounts: string[] = [];
+    const renders: Record<string, ViewProps[]> = { "invoices/browser": [], "customers/badge": [] };
+    const module = (id: string): ViewModule => ({
+      mount: (_el, props) => {
+        renders[id]?.push(props);
+        return { update: (p) => renders[id]?.push(p), unmount: () => unmounts.push(id) };
+      },
+    });
+    const views = { "invoices/browser": module("invoices/browser"), "customers/badge": module("customers/badge") };
+    const open = { ...boot, operations: { ...boot.operations, "invoices.open": { tool: "invoices_open" } } };
+    const start = () => startView({ views, boot: open, bridge, element: document.body });
+    return { start, calls, unmounts, last: (id: string) => renders[id]?.at(-1) };
+  };
+
+  it("moves to another view of the bundle when a result belongs to it, and back, repeating what was there", async () => {
+    const { start, calls, unmounts, last } = twoViews();
+    const started = await start();
+
+    await started.props().emit.call("list", { status: "open" });
+    expect(last("invoices/browser")?.canGoBack).toBe(false);
+
+    // A call whose result is the badge's: the frame becomes the badge, the browser is unmounted.
+    await last("invoices/browser")?.emit.call("open", { id: "inv_1" });
+    expect(unmounts).toEqual(["invoices/browser"]);
+    expect(last("customers/badge")).toMatchObject({ view: "customers/badge", data: { name: "Acme" }, canGoBack: true });
+    expect(last("customers/badge")?.features).toEqual({ compact: true });
+
+    // Back repeats the call that produced the browser, with its input, and the browser returns without a way back.
+    calls.length = 0;
+    await last("customers/badge")?.back();
+    expect(calls).toEqual([{ tool: "invoices_list", input: { status: "open" } }]);
+    expect(unmounts).toEqual(["invoices/browser", "customers/badge"]);
+    expect(last("invoices/browser")).toMatchObject({ view: "invoices/browser", canGoBack: false });
+    await expect(last("invoices/browser")?.back()).rejects.toMatchObject({ kind: "unreachable" });
+  });
+
+  it("lets a view say what it shows now, for refresh and for back to repeat", async () => {
+    const { start, calls, last } = twoViews();
+    const started = await start();
+    await started.props().emit.call("list", { status: "open" });
+
+    // The user changed the filter in the view; neither the first input nor the next navigation should lose it.
+    last("invoices/browser")?.remember({ status: "paid" });
+    calls.length = 0;
+    await last("invoices/browser")?.refresh();
+    expect(calls).toEqual([{ tool: "invoices_list", input: { status: "paid" } }]);
+
+    await last("invoices/browser")?.emit.call("open", { id: "inv_1" });
+    calls.length = 0;
+    await last("customers/badge")?.back();
+    expect(calls).toEqual([{ tool: "invoices_list", input: { status: "paid" } }]);
+  });
+
+  it("lists the calls in flight while they run, so a view can show a loading state", async () => {
+    let release: (result: BridgeResult) => void = () => undefined;
+    const bridge: HostBridge = {
+      connect: () => Promise.resolve(),
+      host: () => ({}),
+      onHostContext: () => undefined,
+      onResult: () => undefined,
+      call: () => new Promise<BridgeResult>((resolve) => (release = resolve)),
+      openLink: () => Promise.resolve(),
+    };
+    const root = recorder();
+    const started = await startView({
+      views: { "invoices/browser": root.module },
+      boot,
+      bridge,
+      element: document.body,
+    });
+    expect(root.last()?.pending).toEqual([]);
+
+    const call = started.props().emit.call("list");
+    expect(root.last()?.pending).toEqual(["list"]);
+    release({ data: { items: [] }, view: { view: "invoices/browser", op: "list", schemaVersion: "" } });
+    await call;
+    expect(root.last()?.pending).toEqual([]);
+
+    // A failed call is no longer in flight either.
+    const failing = started.props().emit.call("list");
+    expect(root.last()?.pending).toEqual(["list"]);
+    release({ error: new ViewCallError("forbidden", "no") });
+    await expect(failing).rejects.toMatchObject({ kind: "forbidden" });
+    expect(root.last()?.pending).toEqual([]);
+  });
+
+  it("hands files and chat messages to the host's bridge, and says so where it has none", async () => {
+    const saved: unknown[] = [];
+    const said: string[] = [];
+    const { bridge } = fakeBridge();
+    bridge.downloadFile = (file) => {
+      saved.push(file);
+      return Promise.resolve();
+    };
+    bridge.sendMessage = (text) => {
+      said.push(text);
+      return Promise.resolve();
+    };
+    const root = recorder();
+    const started = await startView({
+      views: { "invoices/browser": root.module },
+      boot,
+      bridge,
+      element: document.body,
+    });
+    await started.props().emit.downloadFile({ name: "a.csv", mimeType: "text/csv", text: "x" });
+    await started.props().emit.sendMessage("Show Acme");
+    expect(saved).toEqual([{ name: "a.csv", mimeType: "text/csv", text: "x" }]);
+    expect(said).toEqual(["Show Acme"]);
+
+    const bare = fakeBridge().bridge;
+    const other = recorder();
+    const plain = await startView({
+      views: { "invoices/browser": other.module },
+      boot,
+      bridge: bare,
+      element: document.body,
+    });
+    await expect(
+      plain.props().emit.downloadFile({ name: "a.csv", mimeType: "text/csv", text: "x" }),
+    ).rejects.toMatchObject({ kind: "unreachable" });
+    await expect(plain.props().emit.sendMessage("hi")).rejects.toMatchObject({ kind: "unreachable" });
+  });
+
   it("needs a bridge for the rest channel, and takes the host's styles unless the boot says otherwise", async () => {
     await expect(
       startView({ views: { "invoices/browser": recorder().module }, boot: { ...boot, channel: "rest" } }),

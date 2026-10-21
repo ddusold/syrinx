@@ -20,6 +20,8 @@ export const METHODS = {
   sizeChanged: "ui/notifications/size-changed",
   resourceTeardown: "ui/resource-teardown",
   openLink: "ui/open-link",
+  downloadFile: "ui/download-file",
+  message: "ui/message",
   callTool: "tools/call",
   ping: "ping",
 } as const;

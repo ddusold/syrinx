@@ -13,6 +13,16 @@ export interface HostContext {
   platform?: "web" | "desktop" | "mobile";
 }
 
+/** A file a view hands the host to save: its bytes as text, or base64 for anything binary. */
+export interface ViewFile {
+  /** The file name the user is offered, such as `contacts.csv`. */
+  name: string;
+  mimeType: string;
+  text?: string;
+  /** Base64 of the bytes, for a file that is not text. */
+  base64?: string;
+}
+
 /** Actions a view asks of its host. Every call is an app-surface operation, with the same permissions and audit. */
 export interface ViewEmit {
   /**
@@ -22,6 +32,18 @@ export interface ViewEmit {
   call<T = unknown>(operation: string, input?: unknown): Promise<T>;
   /** Asks the host to open a link outside the view. */
   openLink(url: string): Promise<void>;
+  /**
+   * Hands the host a file to save. A sandboxed view cannot start a download itself, so an MCP Apps host does it (and may
+   * ask the user first); a page saves it directly. Rejects with a {@link ViewCallError} when the host cannot or the
+   * user declines.
+   */
+  downloadFile(file: ViewFile): Promise<void>;
+  /**
+   * Posts a message to the host's chat as the user, which Claude then answers, possibly by calling a tool whose result
+   * appears as a new view in the conversation. Optional in the protocol: rejects where the host does not support it,
+   * and always on a page, which has no chat. Not deterministic: the model decides what to do with it.
+   */
+  sendMessage(text: string): Promise<void>;
 }
 
 /** What the user answers to a question the server asks mid-call, as MCP elicitation results carry it. */
@@ -62,6 +84,23 @@ export interface ViewProps<Data = unknown> {
   /** A question a call is waiting on. Framework bindings render a default dialog for it. */
   readonly prompt?: InputPrompt;
   readonly emit: ViewEmit;
+  /**
+   * The operations this view has called that are still running, by name (`new`, `list`). Show a loading state while a
+   * navigating call is in flight: results of bound operations replace what the view shows only when they arrive.
+   */
+  readonly pending: readonly string[];
+  /** Whether {@link back} has somewhere to go: this view was reached by a call from another view or part. */
+  readonly canGoBack: boolean;
+  /**
+   * Returns to what was showing before the last navigation, by repeating the call that produced it with the input it
+   * had. Rejects when there is nowhere to go back to.
+   */
+  back(): Promise<void>;
+  /**
+   * Tells the runtime what the view is showing now, so {@link refresh} and {@link back} repeat that. A search grid whose
+   * filters the user changed passes them here; without it they repeat the input the view was opened with.
+   */
+  remember(input: unknown): void;
   /**
    * Runs the operation that produced `data` again, with the same input, and replaces `data` with its result. Use it
    * after a change instead of calling the operation by name, which would swap a component-bound slice for another
@@ -130,6 +169,10 @@ export interface HostBridge {
   onHostContext(listener: (host: HostContext) => void): void;
   /** Results the host pushes, such as the tool result that opened the view. */
   onResult(listener: (result: BridgeResult) => void): void;
+  /** Saves a file through the host. Absent where the bridge cannot (the gallery preview). */
+  downloadFile?(file: ViewFile): Promise<void>;
+  /** Posts a chat message through the host. Absent where there is no chat. */
+  sendMessage?(text: string): Promise<void>;
   /**
    * The arguments of the call that opened the view, when the host reports them (MCP Apps sends them in
    * `ui/notifications/tool-input`). What `ViewProps.refresh` re-runs the opening operation with.
