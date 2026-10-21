@@ -157,7 +157,7 @@ function galleryIndex(pages: { title: string; view: string; file: string }[]): s
 <div class="widths">${[360, 768]
         .map(
           (w) =>
-            `<iframe data-src="${escapeHtml(p.file)}" src="${escapeHtml(p.file)}" width="${w}" height="420" title="${escapeHtml(`${p.view} at ${w}px`)}"></iframe>`,
+            `<iframe data-src="${escapeHtml(p.file)}" width="${w}" height="420" title="${escapeHtml(`${p.view} at ${w}px`)}"></iframe>`,
         )
         .join("")}</div></figure>`,
     )
@@ -168,24 +168,56 @@ function galleryIndex(pages: { title: string; view: string; file: string }[]): s
 <style>
 body{font:14px/1.5 system-ui,sans-serif;margin:0;padding:16px;background:#f6f6f4;color:#1f1f1d}
 h1{font-size:20px;margin:0 0 16px}figure{margin:0 0 24px}figcaption{margin-bottom:8px}
-.widths{display:flex;gap:16px;overflow-x:auto}iframe{border:1px solid #d8d6d0;border-radius:8px;background:#fff;flex:none}
+.widths{display:flex;gap:16px;overflow-x:auto}iframe{border:1px solid #d8d6d0;border-radius:8px;background:#fff;flex:none}iframe[hidden]{display:none}
 @media (prefers-color-scheme: dark){body{background:#1b1b1a;color:#ecebe7}iframe{border-color:#3a3936;background:#111}}
 .bar{display:flex;align-items:center;gap:8px;margin:0 0 16px}select{font:inherit}
 </style></head><body><h1>View gallery</h1>
-<div class="bar"><label for="theme">Theme</label><select id="theme"><option value="">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+<div class="bar"><label for="theme">Theme</label><select id="theme"><option value="">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+<label for="width">Width</label><select id="width"><option value="768">768px</option><option value="360">360px</option><option value="">Both</option></select></div>
 ${cards || "<p>No view declares examples yet.</p>"}
 <script>
-// The preview pages read ?theme= (see createPreviewBridge); reload each frame with the chosen one.
+// Each frame is a whole view (its bundle, a Vue app, its data), so frames load only when near the screen and are
+// released when scrolled far from it: opening the gallery costs the visible frames, not every example at every width.
+// The preview pages read ?theme= (see createPreviewBridge); a frame loads with the chosen one.
 const theme = document.getElementById("theme");
+const urlFor = (frame) => (theme.value ? frame.dataset.src + "?theme=" + theme.value : frame.dataset.src);
+const frames = [...document.querySelectorAll("iframe[data-src]")];
+const near = new IntersectionObserver(
+  (entries) => {
+    for (const { target, isIntersecting } of entries) {
+      if (isIntersecting) {
+        const url = urlFor(target);
+        if (target.getAttribute("src") !== url) target.src = url;
+      }
+    }
+  },
+  { rootMargin: "200px" },
+);
+const far = new IntersectionObserver(
+  (entries) => {
+    for (const { target, isIntersecting } of entries) if (!isIntersecting && target.hasAttribute("src")) target.removeAttribute("src");
+  },
+  { rootMargin: "1200px" },
+);
+for (const frame of frames) {
+  near.observe(frame);
+  far.observe(frame);
+}
+// One width at a time by default: every frame is a full copy of the view running on the page.
+const width = document.getElementById("width");
+const showWidth = () => {
+  for (const frame of frames) frame.hidden = Boolean(width.value) && frame.getAttribute("width") !== width.value;
+  try { sessionStorage.setItem("syrinx-gallery-width", width.value); } catch {}
+};
+try { width.value = sessionStorage.getItem("syrinx-gallery-width") ?? "768"; } catch {}
+width.addEventListener("change", showWidth);
+showWidth();
 const apply = () => {
-  for (const frame of document.querySelectorAll("iframe[data-src]")) {
-    frame.src = theme.value ? frame.dataset.src + "?theme=" + theme.value : frame.dataset.src;
-  }
+  for (const frame of frames) if (frame.hasAttribute("src")) frame.src = urlFor(frame);
   try { sessionStorage.setItem("syrinx-gallery-theme", theme.value); } catch {}
 };
 try { theme.value = sessionStorage.getItem("syrinx-gallery-theme") || ""; } catch {}
 theme.addEventListener("change", apply);
-if (theme.value) apply();
 </script>
 </body></html>`;
 }
