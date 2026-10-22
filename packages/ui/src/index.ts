@@ -12,7 +12,7 @@ export { createMcpBridge, fromToolResult, fromViewCall } from "./mcp.js";
 export type { ToolResultLike } from "./mcp.js";
 export { createPreviewBridge } from "./preview.js";
 export { createRestBridge, createRestClient, restBoot } from "./rest.js";
-export type { RestBootOptions, RestBridgeOptions, RestClient, RestClientOptions } from "./rest.js";
+export type { RestAsk, RestBootOptions, RestBridgeOptions, RestClient, RestClientOptions } from "./rest.js";
 export { BOOT_ELEMENT_ID, readBoot, ROOT_ELEMENT_ID, startView } from "./runtime.js";
 export type { StartedView, StartOptions } from "./runtime.js";
 export { ViewCallError } from "./types.js";

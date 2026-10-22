@@ -1,6 +1,17 @@
 import type { App, FieldIssue, HostStylesMode, Operation, StandardSchemaV1, ViewBoot } from "@syrinx/core";
 import { fromToolResult, type ToolResultLike } from "./mcp.js";
-import { ViewCallError, type BridgeResult, type HostBridge, type HostContext, type InputResume } from "./types.js";
+import {
+  ViewCallError,
+  type BridgeResult,
+  type HostBridge,
+  type HostContext,
+  type InputAnswer,
+  type InputPrompt,
+  type InputResume,
+} from "./types.js";
+
+/** Questions one call may ask in a row before the client gives up, as the view runtime does. */
+const MAX_ASK_ROUNDS = 8;
 
 export interface RestBridgeOptions {
   /** Where the app's operations are served: `POST {base}/{operation}`, for example `/api/contacts/ops`. */
@@ -159,9 +170,17 @@ export type RestClient<A extends App> = {
   [K in keyof A["operations"] & string]: (input: InputOf<A["operations"][K]>) => Promise<OutputOf<A["operations"][K]>>;
 };
 
+/** What a client shows the user when an operation asks a question: the message, and the fields of a form if there are any. */
+export type RestAsk = (prompt: { message: string; fields: InputPrompt["fields"] }) => Promise<InputAnswer>;
+
 export interface RestClientOptions {
   /** The app's name, as in its URLs: `{base}/{app}/ops/{operation}`. */
   app: string;
+  /**
+   * Answers the questions an operation asks mid-call (a confirmation, a short form): show it and resolve with the user's
+   * answer. The client then retries the call with it. Without this, such an operation rejects with kind `input_required`.
+   */
+  ask?: RestAsk;
   /** Where the REST surface is mounted. Defaults to `/api`. */
   base?: string;
   headers?: () => HeadersInit | Promise<HeadersInit>;
@@ -185,12 +204,27 @@ export function createRestClient<A extends App>(options: RestClientOptions): Res
       // Not `then`: a client must not look like a promise when returned from an async function.
       typeof operation === "string" && operation !== "then"
         ? async (input: unknown) => {
-            const result = await post(operation, input ?? {});
+            let result = await post(operation, input ?? {});
+            for (let round = 1; result.input && options.ask; round++) {
+              if (round > MAX_ASK_ROUNDS) throw new ViewCallError("internal", `${operation} kept asking for input.`);
+              const inputResponses: InputResume["inputResponses"] = {};
+              for (const [key, request] of Object.entries(result.input.requests)) {
+                // Sampling and roots are not offered here; declining lets the operation decide what to do without them.
+                inputResponses[key] =
+                  "unsupported" in request
+                    ? { action: "decline" }
+                    : await options.ask({ message: request.message, fields: request.fields });
+              }
+              result = await post(operation, input ?? {}, {
+                inputResponses,
+                ...(result.input.requestState !== undefined ? { requestState: result.input.requestState } : {}),
+              });
+            }
             if (result.error) throw result.error;
             if (result.input) {
               throw new ViewCallError(
                 "input_required",
-                `${operation} asks the user a question; a client cannot answer it.`,
+                `${operation} asks the user a question; give the client an \`ask\` to answer it.`,
               );
             }
             return result.data;

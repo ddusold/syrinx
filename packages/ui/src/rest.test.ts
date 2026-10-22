@@ -256,6 +256,40 @@ describe("REST client", () => {
     expect((api as unknown as { then?: unknown }).then).toBeUndefined();
   });
 
+  it("answers an operation's questions through `ask`, resumes the call with them, and passes a refusal on", async () => {
+    const asked = {
+      resultType: "input_required",
+      inputRequests: { c: { method: "elicitation/create", params: { message: "Delete it?", requestedSchema: {} } } },
+      requestState: "sealed",
+    };
+    const done = { resultType: "complete", data: { ok: true }, meta: {} };
+    const prompts: string[] = [];
+    const { fetchFn, requests } = fakeFetch((url, init) => {
+      if (!url.endsWith("/resume")) return { body: asked };
+      const answer = (JSON.parse(init.body as string) as { inputResponses: { c: { action: string } } }).inputResponses
+        .c;
+      return answer.action === "accept"
+        ? { body: done }
+        : { status: 409, body: { title: "cancelled", detail: "The user declined." } };
+    });
+    const answering = (action: "accept" | "decline") =>
+      createRestClient<typeof invoices>({
+        app: "invoices",
+        fetch: fetchFn,
+        ask: ({ message }) => {
+          prompts.push(message);
+          return Promise.resolve({ action });
+        },
+      });
+
+    await expect(answering("accept").ping({})).resolves.toEqual({ ok: true });
+    expect(prompts).toEqual(["Delete it?"]);
+    expect(requests.map((r) => r.url)).toEqual(["/api/invoices/ops/ping", "/api/invoices/ops/ping/resume"]);
+    expect(requests[1]?.json).toMatchObject({ inputResponses: { c: { action: "accept" } }, requestState: "sealed" });
+
+    await expect(answering("decline").ping({})).rejects.toMatchObject({ kind: "cancelled" });
+  });
+
   it("names its app in the URL, not from the definition it takes types from", () => {
     expect(invoices.name).toBe("invoices");
   });
