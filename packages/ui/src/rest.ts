@@ -1,11 +1,11 @@
 import type { App, FieldIssue, HostStylesMode, Operation, StandardSchemaV1, ViewBoot } from "@syrinx/core";
-import { fromToolResult, type ToolResultLike } from "./mcp.js";
 import {
   ViewCallError,
   type BridgeResult,
   type HostBridge,
   type HostContext,
   type InputAnswer,
+  type InputNeeded,
   type InputPrompt,
   type InputResume,
 } from "./types.js";
@@ -34,6 +34,13 @@ export interface RestBridgeOptions {
   fetch?: typeof fetch;
   /** What the page tells the view about where it is drawn; defaults to the system theme, fullscreen, the browser's locale. */
   host?: HostContext;
+}
+
+/** A question as the REST surface sends it: a confirmation, or a request for a value matching a JSON Schema. */
+interface RestInputRequest {
+  kind?: "confirm" | "ask";
+  message?: string;
+  schema?: InputPrompt["fields"];
 }
 
 /** An RFC 9457 problem as `@syrinx/rest` writes it: `title` is the Syrinx error kind, `detail` the message. */
@@ -79,7 +86,7 @@ function restCall(transport: RestTransport) {
       | (Problem & {
           resultType?: string;
           data?: unknown;
-          inputRequests?: ToolResultLike["inputRequests"];
+          inputRequests?: Record<string, RestInputRequest>;
           requestState?: string;
         })
       | undefined;
@@ -93,11 +100,19 @@ function restCall(transport: RestTransport) {
       };
     }
     if (body?.resultType === "input_required") {
-      return fromToolResult({
-        resultType: "input_required",
-        ...(body.inputRequests ? { inputRequests: body.inputRequests } : {}),
-        ...(body.requestState !== undefined ? { requestState: body.requestState } : {}),
-      });
+      // The REST surface asks in its own shape (`confirm`, or `ask` with a JSON Schema), not MCP's elicitation requests.
+      const requests: InputNeeded["requests"] = {};
+      for (const [key, request] of Object.entries(body.inputRequests ?? {})) {
+        requests[key] =
+          request.kind === "confirm" && request.message !== undefined
+            ? { message: request.message, fields: {} }
+            : request.kind === "ask" && request.message !== undefined
+              ? { message: request.message, fields: request.schema ?? {} }
+              : { unsupported: request.kind ?? "unknown" };
+      }
+      return {
+        input: { requests, ...(body.requestState !== undefined ? { requestState: body.requestState } : {}) },
+      };
     }
     return { data: body?.data };
   };

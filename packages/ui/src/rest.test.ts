@@ -104,7 +104,7 @@ describe("REST bridge", () => {
   it("passes questions on and resumes them at the operation's /resume path", async () => {
     const asked = {
       resultType: "input_required",
-      inputRequests: { c: { method: "elicitation/create", params: { message: "Sure?", requestedSchema: {} } } },
+      inputRequests: { c: { kind: "confirm", message: "Sure?" } },
       requestState: "sealed",
     };
     const { fetchFn, requests } = fakeFetch((url) =>
@@ -259,7 +259,10 @@ describe("REST client", () => {
   it("answers an operation's questions through `ask`, resumes the call with them, and passes a refusal on", async () => {
     const asked = {
       resultType: "input_required",
-      inputRequests: { c: { method: "elicitation/create", params: { message: "Delete it?", requestedSchema: {} } } },
+      inputRequests: {
+        c: { kind: "confirm", message: "Delete it?" },
+        v: { kind: "ask", message: "Why?", schema: { properties: { why: { type: "string" } } } },
+      },
       requestState: "sealed",
     };
     const done = { resultType: "complete", data: { ok: true }, meta: {} };
@@ -283,7 +286,7 @@ describe("REST client", () => {
       });
 
     await expect(answering("accept").ping({})).resolves.toEqual({ ok: true });
-    expect(prompts).toEqual(["Delete it?"]);
+    expect(prompts).toEqual(["Delete it?", "Why?"]);
     expect(requests.map((r) => r.url)).toEqual(["/api/invoices/ops/ping", "/api/invoices/ops/ping/resume"]);
     expect(requests[1]?.json).toMatchObject({ inputResponses: { c: { action: "accept" } }, requestState: "sealed" });
 
