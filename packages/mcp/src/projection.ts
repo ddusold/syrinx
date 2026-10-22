@@ -262,9 +262,71 @@ const elicitation = (request: InputRequest) =>
 const legacyCannotAsk = () =>
   new SyrinxError("validation", "This asks the user for input, which needs an MCP 2026-07-28 client.");
 
-function askClient(result: InputRequired, era: Era, connected: boolean) {
-  if (era === "legacy" && !connected) return toolError(legacyCannotAsk());
+const modernCannotAsk = () =>
+  new SyrinxError("validation", "This asks the user for input, which needs a client that supports elicitation.");
+
+function askClient(result: InputRequired, era: Era, connected: boolean, canElicit: boolean) {
+  const stateless = era === "legacy" && !connected;
+  if (stateless || !canElicit) {
+    // Plain stateless HTTP cannot carry an elicitation, and a 2026-07-28 client may not declare it. A confirmation can
+    // still be answered by the user, through the model: the call ends here with the question and a token, and goes
+    // through when it is repeated with the token. Questions that collect a value have no such fallback.
+    const questions = Object.values(result.inputRequests);
+    if (questions.length > 0 && questions.every((q) => q.kind === "confirm")) return confirmationRequired(result);
+    return toolError(stateless ? legacyCannotAsk() : modernCannotAsk());
+  }
   return questions(result);
+}
+
+/** The name of the argument a confirmation is answered with when the client cannot be asked directly. */
+export const CONFIRMATION_TOKEN_ARG = "confirmationToken";
+
+/**
+ * A call that stopped for the user's confirmation. It is an error result so nothing reads it as done (and, as with other
+ * errors, it carries no structured content for the tool's output schema to reject); the text tells the model to ask the
+ * user and how to go ahead. The token is the call's sealed request state: it expires, belongs to this caller and these
+ * exact arguments, and answers one question.
+ */
+function confirmationRequired(result: InputRequired): CallToolResult {
+  const messages = Object.values(result.inputRequests).map((q) => q.message);
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: [
+          "Nothing has been changed: this needs the user's confirmation first.",
+          "",
+          ...messages.map((m) => `Confirm with the user: ${m}`),
+          "",
+          `Show the user exactly what will happen and ask whether to go ahead. Only if they agree, call this tool again with the same arguments and \`${CONFIRMATION_TOKEN_ARG}\` set to the value below. Never set it without the user's yes; if they decline, stop.`,
+          "",
+          `${CONFIRMATION_TOKEN_ARG}: ${result.requestState}`,
+        ].join("\n"),
+      },
+    ],
+    _meta: { [ERROR_META_KEY]: { kind: "confirmation_required", message: messages.join(" "), issues: [] } },
+  };
+}
+
+/** Answers every question "accept": for a call repeated with a confirmation token, whose questions are all confirmations. */
+const acceptAll = (): Record<string, unknown> => new Proxy({}, { get: () => ({ action: "accept" }), has: () => true });
+
+/** The tool's input schema, with the confirmation token added when the operation asks. */
+function withConfirmationArg(schema: JsonSchema): JsonSchema {
+  const base = schema as { type?: string; properties?: Record<string, unknown> };
+  if (base.type !== "object") return schema;
+  return {
+    ...schema,
+    properties: {
+      ...base.properties,
+      [CONFIRMATION_TOKEN_ARG]: {
+        type: "string",
+        description:
+          "Only after the user has confirmed: the token a previous call returned when it asked for confirmation. Never invent or reuse one.",
+      },
+    },
+  };
 }
 
 function questions(result: InputRequired) {
@@ -562,7 +624,11 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
             binding?.view,
             isVisible(operation, "model"),
           ),
-          inputSchema: publishOnly(toJsonSchema(operation.input, "input")),
+          inputSchema: publishOnly(
+            annotations.asks
+              ? withConfirmationArg(toJsonSchema(operation.input, "input"))
+              : toJsonSchema(operation.input, "input"),
+          ),
           ...(structured ? { outputSchema: publishOnly(toJsonSchema(operation.output, "output")) } : {}),
           annotations: {
             readOnlyHint: annotations.readOnly ?? false,
@@ -576,9 +642,20 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
           try {
             const surface = surfaceOf(ctx, operation);
             logger?.debug("MCP tool call", { tool: toolName(app, opName, operation, scope), surface });
-            const call = callOptions(ctx, caller, options, clientCanAsk(ctx, server, serving), surface);
-            const result = await registry.invoke(app.name, opName, args, call);
-            if (result.resultType === "input_required") return askClient(result, era, connected);
+            const canElicit = clientCanAsk(ctx, server, serving);
+            // A 2026-07-28 client that cannot elicit still gets the question, as a confirmation token for the model
+            // to relay; declining it unseen (canAsk false) would leave the model with an error and no way forward.
+            const call = callOptions(ctx, caller, options, canElicit || era !== "legacy", surface);
+            let input: unknown = args;
+            if (annotations.asks && args && typeof args === "object" && CONFIRMATION_TOKEN_ARG in args) {
+              // A repeat of a call that asked for confirmation: the token is not part of the input it was minted for.
+              const { [CONFIRMATION_TOKEN_ARG]: token, ...rest } = args as Record<string, unknown>;
+              input = rest;
+              if (typeof token === "string" && token)
+                call.resume = { requestState: token, inputResponses: acceptAll() };
+            }
+            const result = await registry.invoke(app.name, opName, input, call);
+            if (result.resultType === "input_required") return askClient(result, era, connected, canElicit);
             const content = mcp?.content
               ? [...mcp.content(result.data)]
               : [{ type: "text" as const, text: JSON.stringify(result.data) }];

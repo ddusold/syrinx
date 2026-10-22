@@ -246,7 +246,7 @@ describe.each<Era>(["legacy", "auto"])("MCP surface (%s negotiation)", (era) => 
     expect(missing).toMatchObject({ isError: true, content: [{ text: "not_found: No invoice inv_404." }] });
   });
 
-  it("asks for confirmation through elicitation on modern clients, and explains the limit to legacy ones", async () => {
+  it("asks for confirmation through elicitation on modern clients, and hands legacy ones a token to confirm with", async () => {
     const client = await connect(era);
     elicited.length = 0;
     elicitAnswer = "accept";
@@ -259,8 +259,27 @@ describe.each<Era>(["legacy", "auto"])("MCP surface (%s negotiation)", (era) => 
       expect(declined.structuredContent).toEqual({ id: "inv_1", voided: false });
     } else {
       expect(elicited).toEqual([]);
+      // Nothing ran: the user's confirmation is asked through the model, with a token that repeats the call.
       expect(accepted.isError).toBe(true);
-      expect(JSON.stringify(accepted.content)).toContain("needs an MCP 2026-07-28 client");
+      expect(accepted._meta?.[ERROR_META_KEY]).toMatchObject({ kind: "confirmation_required" });
+      const text = JSON.stringify(accepted.content);
+      expect(text).toContain("Void invoice inv_1?");
+      const token = /confirmationToken: (\S+)/.exec(String((accepted.content as { text?: string }[])[0]?.text))?.[1];
+      expect(token).toBeTruthy();
+      const tool = (await client.listTools()).tools.find((t) => t.name === "invoices_void");
+      expect(tool?.inputSchema.properties).toHaveProperty("confirmationToken");
+      // The token belongs to these arguments: another call's is refused, and the same call goes through with it.
+      const other = await client.callTool({
+        name: "invoices_void",
+        arguments: { id: "inv_2", confirmationToken: token },
+      });
+      expect(other.isError).toBe(true);
+      expect(JSON.stringify(other.content)).toContain("requestState");
+      const confirmed = await client.callTool({
+        name: "invoices_void",
+        arguments: { id: "inv_1", confirmationToken: token },
+      });
+      expect(confirmed.structuredContent).toEqual({ id: "inv_1", voided: true });
     }
   });
 
@@ -327,10 +346,20 @@ describe.each<Era>(["legacy", "auto"])("MCP surface (%s negotiation)", (era) => 
 });
 
 describe("clients that cannot answer questions", () => {
-  it("treat questions as declined instead of asking", async () => {
+  it("get a confirmation token for the model to relay instead of an unseen decline", async () => {
     const client = await connect("auto", { canAnswer: false });
-    const voided = await client.callTool({ name: "invoices_void", arguments: { id: "inv_1" } });
-    expect(voided.structuredContent).toEqual({ id: "inv_1", voided: false });
+    elicited.length = 0;
+    const asked = await client.callTool({ name: "invoices_void", arguments: { id: "inv_1" } });
+    expect(elicited).toEqual([]);
+    expect(asked.isError).toBe(true);
+    expect(asked._meta?.[ERROR_META_KEY]).toMatchObject({ kind: "confirmation_required" });
+    const token = /confirmationToken: (\S+)/.exec(String((asked.content as { text?: string }[])[0]?.text))?.[1];
+    expect(token).toBeTruthy();
+    const confirmed = await client.callTool({
+      name: "invoices_void",
+      arguments: { id: "inv_1", confirmationToken: token },
+    });
+    expect(confirmed.structuredContent).toEqual({ id: "inv_1", voided: true });
     const planned = await client.getPrompt({ name: "invoices_plan", arguments: {} });
     expect(planned.messages).toMatchObject([{ content: { text: "Plan invoicing for every customer." } }]);
   });
