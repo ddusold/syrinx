@@ -146,6 +146,20 @@ afterEach(async () => {
   audit.length = 0;
 });
 
+describe("server instructions", () => {
+  it("sends what the model should know about the server when it connects: fixed text, or made for the caller", async () => {
+    const withInstructions = (instructions: McpOptions["instructions"]) =>
+      createMcpSurface({ ...options, ...(instructions ? { instructions } : {}) });
+
+    expect((await connect("/mcp", withInstructions("Invoices are in cents."))).getInstructions()).toBe(
+      "Invoices are in cents.",
+    );
+    const made = withInstructions((caller) => `For ${caller.principal?.id ?? "nobody"}.`);
+    expect((await connect("/mcp", made)).getInstructions()).toBe("For nobody.");
+    expect((await connect("/mcp", surface)).getInstructions()).toBeUndefined();
+  });
+});
+
 describe("views over MCP", () => {
   it("points bound tools at their ui:// resource and marks who may call each tool", async () => {
     const { tools } = await (await connect("/mcp/invoices")).listTools();

@@ -59,7 +59,6 @@ export const SURFACE_META_KEY = `${META_PREFIX}/surface`;
  * as data and the view returns the answers as arguments, still checked against the sealed `requestState`.
  */
 export const VIEW_CALL_TOOL = "syrinx_view_call";
-/** The MCP Apps extension id hosts declare in `capabilities.extensions`. */
 /**
  * A tool that opens a view tells the model about the page it opens, in the view's own description, so a request in the
  * user's words ("change my brand settings") reaches the tool whose name alone would not say so. Only for tools a model can
@@ -71,6 +70,7 @@ function withViewContext(description: string, view: View | undefined, forModel: 
   return `${description}\n\nOpens the "${view.title ?? view.name}" page. ${about}`;
 }
 
+/** The MCP Apps extension id hosts declare in `capabilities.extensions`. */
 export const APPS_EXTENSION = "io.modelcontextprotocol/ui";
 /** The MCP Apps resource type (`io.modelcontextprotocol/ui`). */
 export const VIEW_MIME_TYPE = "text/html;profile=mcp-app";
@@ -100,6 +100,12 @@ export interface Caller {
 
 export interface ProjectionOptions<Deps = unknown> {
   registry: Registry;
+  /**
+   * What the model should know about this server as a whole, sent to the client when it connects (MCP `instructions`):
+   * the domain's terms, how its filters and ids work, rules that apply across tools. A function gets the caller, to
+   * name their organization or user. Tool descriptions say what each tool does; this says how the server fits together.
+   */
+  instructions?: string | ((caller: Caller) => string | undefined);
   /** Server name and version reported to clients. */
   name: string;
   version: string;
@@ -494,9 +500,11 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
   const { registry, logger } = options;
   const cacheScope: CacheScope = registry.personalized ? "private" : "public";
   const list = { ttlMs: options.listTtlMs ?? 60_000, cacheScope };
+  const instructions = typeof options.instructions === "function" ? options.instructions(caller) : options.instructions;
   const server = new McpServer(
     { name: options.name, version: options.version },
     {
+      ...(instructions ? { instructions } : {}),
       // No streaming: clients learn about changes when they next list (guided by ttlMs), never by subscription.
       capabilities: {
         tools: { listChanged: false },
