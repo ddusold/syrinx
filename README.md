@@ -13,7 +13,8 @@ Declare an app once (typed operations, resources and views) and Syrinx serves it
 | `@syrinx/testing`             | In-process, REST and MCP clients, parity checks                                                     | Phases 1–2 |
 | `@syrinx/mcp`                 | MCP surface on the TypeScript SDK v2: Streamable HTTP at `/mcp` and `/mcp/{app}`, stdio             | Phase 2    |
 | `@syrinx/ui`                  | View contract, host bridges (MCP Apps, preview), view context; `/server` renders and serves shells  | Phase 3    |
-| `@syrinx/ui-vue`              | Vue binding: `toView`, `useView`, `ViewContext`, `Embed`, `ViewPart`                                | Phase 3    |
+| `@syrinx/ui-vue`              | Vue binding: `toView`, `useView`, `useAppView`, `ViewContext`, `Embed`, `ViewPart`                  | Phase 3    |
+| `@syrinx/nest`                | NestJS module: REST, MCP and built views beside Nest's routes; operations reach Nest providers      | Phase 3    |
 | `@syrinx/vite`                | `buildViews`: one self-contained bundle per view, `manifest.json`, gallery page                     | Phase 3    |
 | `@syrinx/host`, `@syrinx/cli` | Host, CLI                                                                                           | Phases 4–5 |
 

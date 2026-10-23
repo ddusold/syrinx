@@ -2,10 +2,12 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "types": ["node"],
+    "experimentalDecorators": true,
     "paths": {
       "@syrinx/core": ["./packages/core/src/index.ts"],
       "@syrinx/mcp": ["./packages/mcp/src/index.ts"],
       "@syrinx/mcp/stdio": ["./packages/mcp/src/stdio.ts"],
+      "@syrinx/nest": ["./packages/nest/src/index.ts"],
       "@syrinx/rest": ["./packages/rest/src/index.ts"],
       "@syrinx/testing": ["./packages/testing/src/index.ts"],
       "@syrinx/ui": ["./packages/ui/src/index.ts"],

@@ -31,4 +31,13 @@ export type {
   ViewProps,
   ViewRuntime,
 } from "./types.js";
-export type { ViewBoot, ViewData } from "@syrinx/core";
+export type {
+  OperationInput,
+  OperationOutput,
+  TypedEmit,
+  TypedViewProps,
+  ViewBound,
+  ViewCalls,
+  ViewDataOf,
+} from "./typed.js";
+export type { App, ViewBoot, ViewData } from "@syrinx/core";

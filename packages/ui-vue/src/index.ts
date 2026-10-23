@@ -12,7 +12,9 @@ import {
   type MountedView,
   type RestBootOptions,
   type RestBridgeOptions,
+  type App,
   type StartedView,
+  type TypedViewProps,
   type ViewContextDef,
   type ViewModule,
   type ViewProps,
@@ -197,6 +199,22 @@ export function useView<Data = unknown>(): Readonly<Ref<ViewProps<Data>>> {
   const props = hasInjectionContext() ? inject(PROPS, null) : null;
   if (!props) throw new Error("useView() must be called inside a Syrinx view.");
   return props as Readonly<Ref<ViewProps<Data>>>;
+}
+
+/**
+ * {@link useView} typed from the app that declares the view: `data` is what the view's bound operations return, and
+ * `emit.call` takes only the operations the view lists in `calls`, with their input and output types.
+ *
+ * ```ts
+ * import type { contactsApp } from "../contacts.app.js"; // a type import: the app's code stays out of the bundle
+ * const view = useAppView<typeof contactsApp, "browser">();
+ * await view.value.emit.call("setActivation", { id, activation: "opted-in" }); // checked
+ * ```
+ */
+export function useAppView<A extends App, Name extends keyof A["views"] & string>(): Readonly<
+  Ref<TypedViewProps<A, Name>>
+> {
+  return useView();
 }
 
 /**
