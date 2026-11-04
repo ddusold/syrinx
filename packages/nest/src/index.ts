@@ -18,13 +18,17 @@ import type { NestExpressApplication } from "@nestjs/platform-express";
 import {
   createMemoryIdempotencyStore,
   createRegistry,
+  errorKinds,
   errors,
+  SyrinxError,
   type App,
   type Context,
+  type ErrorKind,
   type Principal,
 } from "@syrinx/core";
 import { createMcpSurface } from "@syrinx/mcp";
 import { createRestApp } from "@syrinx/rest";
+import { createRestClient, ViewCallError, type RestClient, type RestClientOptions } from "@syrinx/ui";
 import { loadViewShells, serveViewAssets, watchViewShells } from "@syrinx/ui/server";
 import { buildViews, watchViews, type BuildViewsOptions } from "@syrinx/vite";
 
@@ -210,4 +214,34 @@ export async function listen(app: INestApplication, port: number): Promise<Serve
   });
   await new Promise<void>((resolve) => server.listen(port, resolve));
   return server;
+}
+
+/**
+ * A typed client for another Syrinx app's REST surface, for handlers that front it: an app over a service that already
+ * serves one. Pass the remote app's type only (`remoteApp<typeof contacts>({ app: "contacts", base, headers })`) and call
+ * its operations as methods. A failure rethrows as the {@link SyrinxError} this app's own callers expect, so a validation
+ * error keeps its field issues and a missing record stays a 404 instead of becoming a bare 500.
+ */
+export function remoteApp<A extends App>(options: RestClientOptions): RestClient<A> {
+  const client = createRestClient<A>(options) as Record<string, (input: unknown) => Promise<unknown>>;
+  return new Proxy(client, {
+    get: (target, operation) => {
+      const call = Reflect.get(target, operation) as ((input: unknown) => Promise<unknown>) | undefined;
+      if (typeof operation !== "string" || !call) return call;
+      return async (input: unknown) => {
+        try {
+          return await call(input);
+        } catch (error) {
+          throw fromRemote(error);
+        }
+      };
+    },
+  }) as unknown as RestClient<A>;
+}
+
+function fromRemote(error: unknown): unknown {
+  if (!(error instanceof ViewCallError)) return error;
+  if (error.kind in errorKinds) return new SyrinxError(error.kind as ErrorKind, error.message, error.issues);
+  // `unreachable` (the service is down) and `input_required` (it asked a question nobody can answer here).
+  return new SyrinxError(error.kind === "unreachable" ? "upstream" : "internal", error.message, error.issues);
 }

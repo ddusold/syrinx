@@ -1,10 +1,10 @@
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Body, Controller, Get, Injectable, Module, Post, type INestApplication } from "@nestjs/common";
-import { defineApp, errors, op } from "@syrinx/core";
+import { defineApp, errors, op, SyrinxError } from "@syrinx/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createSyrinxApp, listen, SyrinxModule, type NestContext } from "./index.js";
+import { createSyrinxApp, listen, remoteApp, SyrinxModule, type NestContext } from "./index.js";
 
 @Injectable()
 class Greeter {
@@ -116,5 +116,25 @@ describe("@syrinx/nest", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
     expect(await response.text()).toContain("greetings");
+  });
+});
+
+describe("remoteApp", () => {
+  it("calls another Syrinx app's operations and rethrows its failures as SyrinxErrors", async () => {
+    const remote = remoteApp<typeof greetings>({ app: "greetings", base: `${base}/api` });
+    const signedIn = remoteApp<typeof greetings>({
+      app: "greetings",
+      base: `${base}/api`,
+      headers: () => ({ authorization: "Bearer ok" }),
+    });
+    expect(await signedIn.greet({ name: "Ada" })).toEqual({ message: "Hello, Ada" });
+    expect(await signedIn.secret({})).toEqual({ ok: true });
+    // A validation error keeps its field issues; a missing credential stays unauthenticated, as a SyrinxError.
+    await expect(signedIn.greet({ name: 1 as unknown as string })).rejects.toMatchObject({ kind: "validation" });
+    await expect(remote.secret({})).rejects.toMatchObject({ kind: "unauthenticated" });
+    await expect(remote.secret({})).rejects.toBeInstanceOf(SyrinxError);
+    // A service that is not there is a bad gateway, not a crash.
+    const gone = remoteApp<typeof greetings>({ app: "greetings", base: "http://localhost:1/api" });
+    await expect(gone.greet({ name: "x" })).rejects.toMatchObject({ kind: "upstream" });
   });
 });

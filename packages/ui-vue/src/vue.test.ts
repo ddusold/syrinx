@@ -608,10 +608,7 @@ describe("ViewContainer and ViewAction", () => {
   });
 
   it("in a host shows the bar and moves the action into its menu, with Open in browser after it", async () => {
-    const c = await mountContainer(
-      { platform: "desktop" },
-      { openInBrowser: "https://app.example/contacts?search=a" },
-    );
+    const c = await mountContainer({ platform: "desktop" }, { openInBrowser: "https://app.example/contacts?search=a" });
     expect(c.q(".syrinx-container-title")?.textContent).toBe("Contacts");
     expect(c.q(".custom-export")).toBeNull();
     await menu(c);
