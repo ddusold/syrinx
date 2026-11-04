@@ -73,7 +73,7 @@ views: {
 },
 ```
 
-Build the bundles with `buildViews({ apps, outDir, plugins: [vue()] })`, load them with `loadViewShells({ dir })` from `@syrinx/ui/server`, and pass them to `createMcpSurface({ views })`. Bound tools then carry `_meta.ui.resourceUri`, views are served as `ui://{app}/{view}` resources, and operations only views call are listed with `_meta.ui.visibility: ["app"]`. Shells inline their bundle by default; pass `baseUrl` to reference hosted, SRI-pinned files served by `serveViewAssets` instead. Views speak the MCP Apps protocol through a small built-in channel rather than the ext-apps SDK, so a Vue view is about 30 KB gzipped, and the MCP surface gzips responses (set `compress: false` when a proxy already does).
+Build the bundles with `buildViews({ apps, outDir, plugins: [vue()] })`, load them with `loadViewShells({ dir })` from `@syrinx/ui/server`, and pass them to `createMcpSurface({ views })`. Bound tools then carry `_meta.ui.resourceUri`, views are served as `ui://{app}/{view}` resources, and operations only views call are listed with `_meta.ui.visibility: ["app"]`. Only MCP Apps hosts honor that visibility: other hosts show app-only tools to the model like any other tool, so give them the same permissions you would give a model-visible tool. Shells inline their bundle by default; pass `baseUrl` to reference hosted, SRI-pinned files served by `serveViewAssets` instead. Views speak the MCP Apps protocol through a small built-in channel rather than the ext-apps SDK, so a Vue view is about 30 KB gzipped, and the MCP surface gzips responses (set `compress: false` when a proxy already does).
 
 Parts of one view share typed state with `defineViewContext` and `<ViewContext>`/`useViewContext`, including views embedded from other apps.
 
