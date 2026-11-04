@@ -27,11 +27,13 @@ import type { IdempotencyStore } from "./idempotency.js";
 import {
   createAsker,
   createRequestStateCodec,
+  createViewTokenCodec,
   InputRequiredSignal,
   type Binding,
   type InputRequired,
   type RequestStateCodec,
   type Resume,
+  type ViewTokenCodec,
 } from "./interaction.js";
 import type { StandardSchemaV1 } from "./standard-schema.js";
 import type { View } from "./view.js";
@@ -78,6 +80,8 @@ export interface RegistryOptions {
   requestStateKey?: Secret | readonly Secret[];
   /** How long an `input_required` answer window stays open. Defaults to 600 seconds. */
   requestStateTtlSeconds?: number;
+  /** How long a view token, minted when a view's shell is served, stays valid. Defaults to 86400 seconds (a day). */
+  viewTokenTtlSeconds?: number;
   /** Where Idempotency-Key outcomes are kept. Without one, keys are passed to handlers but nothing is deduplicated. */
   idempotency?: IdempotencyStore;
   /** Receives one record per write (non-read-only operation), whatever the outcome. */
@@ -139,6 +143,16 @@ export interface Registry {
    * check it fully (binding included); this lets a surface refuse forged state before dispatching anything.
    */
   checkRequestState(requestState: string): Promise<void>;
+  /**
+   * Seals which view (`app/view`) a shell was served for, and to whom. Surfaces put it in the view's boot and
+   * require it on calls only views may make. Undefined when the registry has no requestStateKey.
+   */
+  mintViewToken(view: string, options?: Pick<InvokeOptions, "principal" | "tenant">): Promise<string | undefined>;
+  /**
+   * The view a token was minted for. Rejects forged and expired tokens, and tokens minted for another principal or
+   * tenant, with a validation error.
+   */
+  openViewToken(token: string, options?: Pick<InvokeOptions, "principal" | "tenant">): Promise<string>;
 }
 
 export function isVisible(operation: Operation, surface: Surface): boolean {
@@ -335,6 +349,16 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
     return (codec ??= createRequestStateCodec(key, registryOptions.requestStateTtlSeconds));
   };
 
+  let viewTokens: ViewTokenCodec | undefined;
+  const viewTokenCodec = () => {
+    const key = registryOptions.requestStateKey;
+    return key ? (viewTokens ??= createViewTokenCodec(key, registryOptions.viewTokenTtlSeconds)) : undefined;
+  };
+  const tokenBinding = (options: Pick<InvokeOptions, "principal" | "tenant">) => ({
+    principal: (options.principal ?? anonymous).id,
+    tenant: options.tenant?.id,
+  });
+
   const ensureEnabled = async (target: Target, tenant?: Tenant) => {
     if (registryOptions.isEnabled && !(await registryOptions.isEnabled(target, tenant))) {
       const kind = target.operation ? "operation" : target.resource ? "resource" : "prompt";
@@ -515,6 +539,17 @@ export function createRegistry(apps: readonly App[], registryOptions: RegistryOp
     },
 
     checkRequestState: (requestState) => requestStates("A resumed call").check(requestState),
+
+    async mintViewToken(view, options = {}) {
+      return viewTokenCodec()?.mint(view, tokenBinding(options));
+    },
+
+    async openViewToken(token, options = {}) {
+      const tokens = viewTokenCodec();
+      if (!tokens)
+        throw errors.validation("This server issues no view tokens.", [{ path: "token", message: "unknown" }]);
+      return tokens.open(token, tokenBinding(options));
+    },
 
     async render(appName, promptName, rawArgs, invokeOptions = {}) {
       const p = getPrompt(appName, promptName);

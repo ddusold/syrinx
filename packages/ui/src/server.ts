@@ -146,9 +146,13 @@ export function serveViewAssets(
     if (request.method !== "GET" && request.method !== "HEAD") return undefined;
     const { pathname } = new URL(request.url);
     if (!pathname.startsWith(prefix)) return undefined;
-    const path = normalize(decodeURIComponent(pathname.slice(prefix.length)))
-      .split(sep)
-      .join("/");
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname.slice(prefix.length));
+    } catch {
+      return new Response("Not found", { status: 404 }); // a malformed escape names no file
+    }
+    const path = normalize(decoded).split(sep).join("/");
     const file = path.startsWith("..") ? undefined : shells.files.get(path);
     if (!file) return new Response("Not found", { status: 404 });
     return new Response(request.method === "HEAD" ? null : new Uint8Array(file.body), {

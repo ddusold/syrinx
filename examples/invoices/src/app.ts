@@ -137,10 +137,10 @@ export const invoices = defineApp({
       description: "Draft a polite payment reminder for an unpaid invoice.",
       args: z.object({ id: z.string().min(1).describe("Invoice id, such as inv_1.") }),
       permissions: ["invoices:read"],
-      // Suggests unpaid invoice ids as the user types.
+      // Suggests sent (so unpaid and awaited) invoice ids as the user types.
       complete: {
         id: async (value, _context, ctx: Ctx) =>
-          (await ctx.deps.store.list({ status: "draft", limit: 100 }))
+          (await ctx.deps.store.list({ status: "sent", limit: 100 }))
             .map((i) => i.id)
             .filter((id) => id.startsWith(value)),
       },

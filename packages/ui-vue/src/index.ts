@@ -253,8 +253,18 @@ export function useViewContext<State>(
   def: ViewContextDef<State, never>,
 ): readonly [Readonly<Ref<State>>, ContextStore<State>["set"]] {
   const scope = inject(SCOPE, null);
-  const store =
-    scope?.value.find(def) ?? createContextStore(def as ViewContextDef<State>, inject(PROPS, null)?.value.data);
+  const provided = scope?.value.find(def);
+  const props = inject(PROPS, null);
+  const store = provided ?? createContextStore(def as ViewContextDef<State>, props?.value.data);
+  // A local instance follows the view's data as a provider would: seeded by the first data, merged after that.
+  if (!provided && props) {
+    watch(
+      () => props.value.data,
+      (data) => {
+        store.refresh(data);
+      },
+    );
+  }
   const state = shallowRef(store.get());
   const stop = store.subscribe((next) => {
     state.value = next;

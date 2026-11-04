@@ -10,7 +10,7 @@ import {
   type AuthMetadataOptions,
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
-import { buildServer, checkToolNames, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
+import { buildServer, checkMembers, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
 
 export {
   APPS_EXTENSION,
@@ -24,16 +24,8 @@ export {
   VIEW_MIME_TYPE,
   viewUri,
 } from "./projection.js";
-export type {
-  Caller,
-  Era,
-  ProjectionOptions,
-  Scope,
-  Serving,
-  ViewCallResult,
-  ViewShell,
-  ViewShells,
-} from "./projection.js";
+export type { Caller, Era, ProjectionOptions, Scope, Serving, ViewShell, ViewShells } from "./projection.js";
+export type { ViewCallResult } from "@syrinx/core";
 export type { AuthMetadataOptions } from "@modelcontextprotocol/server";
 
 export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {
@@ -166,7 +158,7 @@ async function gzipped(request: Request, response: Response, method: string | un
 export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const { registry } = options;
   const basePath = (options.basePath ?? "/mcp").replace(/\/$/, "");
-  checkToolNames(registry, "all");
+  checkMembers(registry, "all");
   const withViews = [...registry.apps.values()].filter((a) => Object.keys(a.views).length).map((a) => a.name);
   if (withViews.length && !options.views) {
     options.logger?.warn(
@@ -174,7 +166,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
     );
   }
   for (const app of registry.apps.values()) {
-    checkToolNames(registry, { app: app.name });
+    checkMembers(registry, { app: app.name });
     for (const warning of lintApp(app)) {
       options.logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`, { target: warning.target });
     }
@@ -205,7 +197,12 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const scopeOf = (pathname: string): Scope | undefined => {
     if (pathname === basePath) return "all";
     if (!pathname.startsWith(`${basePath}/`)) return undefined;
-    const app = decodeURIComponent(pathname.slice(basePath.length + 1));
+    let app: string;
+    try {
+      app = decodeURIComponent(pathname.slice(basePath.length + 1));
+    } catch {
+      return undefined; // a malformed escape names no app
+    }
     return registry.apps.has(app) ? { app } : undefined;
   };
 

@@ -1,4 +1,4 @@
-import type { FieldIssue, HostStylesMode, ViewResultMeta } from "@syrinx/core";
+import type { FieldIssue, HostStylesMode, ViewCallResult, ViewResultMeta } from "@syrinx/core";
 import {
   applyHostStyles,
   createAppsChannel,
@@ -69,13 +69,10 @@ export function fromToolResult(result: ToolResultLike): BridgeResult {
   return { data, ...(view ? { view } : {}) };
 }
 
-/** What the server's view channel tool returns, in `structuredContent` (or as JSON text when a host drops that). */
-type ViewCallResult =
-  | { resultType: "complete"; data: unknown; view?: ViewResultMeta }
-  | { resultType: "input_required"; inputRequests: ToolResultLike["inputRequests"]; requestState: string }
-  | { resultType: "error"; error: { kind: string; message: string; issues?: FieldIssue[] } };
-
-/** Reads a view channel result into data, questions or an error. */
+/**
+ * Reads a view channel result into data, questions or an error. A result that is not a channel envelope (the host
+ * answered for the server, as with "tool not allowed") is reported as `unavailable`, so the bridge falls back.
+ */
 export function fromViewCall(result: ToolResultLike): BridgeResult {
   let envelope = result.structuredContent as ViewCallResult | undefined;
   const text = result.content?.find((c) => c.type === "text")?.text;
@@ -87,12 +84,12 @@ export function fromViewCall(result: ToolResultLike): BridgeResult {
     }
   }
   if (!envelope?.resultType) {
-    return { error: new ViewCallError("internal", text ?? "The view channel returned no result.") };
+    return { error: new ViewCallError("unavailable", text ?? "The view channel returned no result.") };
   }
   if (envelope.resultType === "input_required") {
     return fromToolResult({
       resultType: "input_required",
-      ...(envelope.inputRequests ? { inputRequests: envelope.inputRequests } : {}),
+      inputRequests: envelope.inputRequests,
       requestState: envelope.requestState,
     });
   }
@@ -155,19 +152,25 @@ export function createMcpBridge(
     onHostContext: (listener) => void hostListeners.push(listener),
     onResult: (listener) => void resultListeners.push(listener),
     async call(tool, input, { app, operation, resume, viewCall }) {
-      try {
-        if (viewCall && channelOpen) {
-          const result = fromViewCall(
+      if (viewCall && channelOpen) {
+        let result: BridgeResult;
+        try {
+          result = fromViewCall(
             await apps.request<ToolResultLike>(METHODS.callTool, {
-              name: viewCall,
-              arguments: { app, operation, input, ...(resume ? { resume } : {}) },
+              name: viewCall.tool,
+              arguments: { app, operation, input, token: viewCall.token, ...(resume ? { resume } : {}) },
               _meta: { [SURFACE_META_KEY]: "app" },
             }),
           );
-          if (result.error?.kind !== "unavailable") return result;
-          // The server refused the channel (this host did not declare MCP Apps): call directly from now on.
-          channelOpen = false;
+        } catch (error) {
+          // The host refused to relay the channel tool.
+          result = { error: new ViewCallError("unavailable", error instanceof Error ? error.message : String(error)) };
         }
+        if (result.error?.kind !== "unavailable") return result;
+        // The server or host refused the channel: call directly from now on, and let the host do the asking.
+        channelOpen = false;
+      }
+      try {
         // Answers go on the call's params, the retry channel MCP 2026-07-28 defines; the host does the asking.
         const result = await apps.request<ToolResultLike>(METHODS.callTool, {
           name: tool,

@@ -88,7 +88,9 @@ export async function startView(options: StartOptions): Promise<StartedView> {
   // The shown view renders prompts for itself and everything embedded in it, so its calls can ask inside the view.
   const viewCallFor = () => {
     const module = moduleOf(current);
-    return module?.handlesPrompts === true && boot.viewCallTool ? { viewCall: boot.viewCallTool } : {};
+    return module?.handlesPrompts === true && boot.viewCallTool && boot.viewToken
+      ? { viewCall: { tool: boot.viewCallTool, token: boot.viewToken } }
+      : {};
   };
 
   const state: {
@@ -186,28 +188,36 @@ export async function startView(options: StartOptions): Promise<StartedView> {
     return fn.bind(bridge) as NonNullable<HostBridge[K]>;
   };
 
-  const emitFor = (app: string): ViewEmit => ({
+  /**
+   * Calls for `app`'s operations. `embed` names the embedded view making them: a result that belongs to that same
+   * view is its own data, as when a badge looks up its customer, and must not take over the frame.
+   */
+  const emitFor = (app: string, embed?: string): ViewEmit => ({
     async call<T>(qualified: string, input: unknown = {}) {
       // "app.operation" reaches an operation of another app (one the view embeds), as the app's own view would.
       const dot = qualified.indexOf(".");
       if (dot > 0 && qualified.slice(0, dot) !== app)
-        return emitFor(qualified.slice(0, dot)).call<T>(qualified.slice(dot + 1), input);
+        return emitFor(qualified.slice(0, dot), embed).call<T>(qualified.slice(dot + 1), input);
       const operation = dot > 0 ? qualified.slice(dot + 1) : qualified;
-      const route = boot.operations[`${app}.${operation}`];
-      if (!route) {
+      const tool = boot.operations[`${app}.${operation}`]?.tool;
+      if (!tool) {
         throw new ViewCallError("unreachable", `${app}.${operation} is not served where this view runs.`);
       }
       pending.push(operation);
       update();
       try {
-        let result = await bridge.call(route.tool, input, { app, operation, ...viewCallFor() });
+        let result = await bridge.call(tool, input, { app, operation, ...viewCallFor() });
         for (let round = 1; result.input; round++) {
           if (round > MAX_ROUNDS) throw new ViewCallError("internal", `${app}.${operation} kept asking for input.`);
+          // Answers without the state they belong to would only be asked again, so stop rather than loop.
+          if (result.input.requestState === undefined) {
+            throw new ViewCallError("internal", `${app}.${operation} asked for input without a requestState.`);
+          }
           const resume = await answerAll(result.input);
-          result = await bridge.call(route.tool, input, { app, operation, resume, ...viewCallFor() });
+          result = await bridge.call(tool, input, { app, operation, resume, ...viewCallFor() });
         }
         if (result.error) throw result.error;
-        if (result.view && moduleOf(result.view.view)) {
+        if (result.view && moduleOf(result.view.view) && result.view.view !== embed) {
           // Moving to another view or part leaves a way back, when what is leaving can be repeated.
           const meta = result.view;
           const navigates = meta.view !== current || meta.component !== state.component;
@@ -267,7 +277,7 @@ export async function startView(options: StartOptions): Promise<StartedView> {
       data,
       features: boot.features[view] ?? {},
       host: state.host,
-      emit: emitFor(appOf(view)),
+      emit: emitFor(appOf(view), view),
       pending,
       canGoBack: history.length > 0,
       back,

@@ -199,8 +199,11 @@ export interface HostBridge {
       app: string;
       operation: string;
       resume?: InputResume;
-      /** The server's view channel tool: when set, questions come back to the view instead of to the host. */
-      viewCall?: string;
+      /**
+       * The server's view channel tool and the view token from the boot: when set, questions come back to the view
+       * instead of to the host.
+       */
+      viewCall?: { tool: string; token: string };
     },
   ): Promise<BridgeResult>;
   openLink(url: string): Promise<void>;

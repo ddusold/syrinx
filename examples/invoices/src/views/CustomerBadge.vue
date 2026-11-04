@@ -18,11 +18,17 @@ const initials = computed(() =>
 
 watch(
   () => view.value.data?.name,
-  async (name) => {
+  async (name, _old, onCleanup) => {
     looked.value = undefined;
     if (!name || view.value.data?.tier) return;
+    // A lookup for an earlier name that answers late must not replace the current one.
+    let stale = false;
+    onCleanup(() => {
+      stale = true;
+    });
     try {
-      looked.value = await view.value.emit.call<Customer>("get", { name });
+      const customer = await view.value.emit.call<Customer>("get", { name });
+      if (!stale) looked.value = customer;
     } catch {
       // Not served where this view runs (or not found): the name alone still reads fine.
     }

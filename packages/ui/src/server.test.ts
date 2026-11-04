@@ -87,6 +87,7 @@ describe("view shells", () => {
     expect(await ok?.text()).toContain("console.log");
     expect(serve(new Request("http://localhost/views/manifest.json"))?.status).toBe(404);
     expect(serve(new Request("http://localhost/views/..%2F..%2Fetc%2Fpasswd"))?.status).toBe(404);
+    expect(serve(new Request("http://localhost/views/%ZZ"))?.status).toBe(404);
     expect(serve(new Request("http://localhost/api/x"))).toBeUndefined();
   });
 

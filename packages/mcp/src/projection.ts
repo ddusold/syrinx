@@ -19,10 +19,12 @@ import {
   type Principal,
   type Registry,
   type Surface,
+  type Target,
   type Tenant,
   type Tracer,
   type View,
   type ViewBoot,
+  type ViewCallResult,
   type ViewCsp,
   type ViewResultMeta,
 } from "@syrinx/core";
@@ -154,34 +156,64 @@ export const toolName = (app: App, opName: string, operation: Operation, scope: 
 /** Operations become tools when a model or a view can call them. */
 const isTool = (operation: Operation) => isVisible(operation, "model") || isVisible(operation, "app");
 
-/** Fails fast on two operations projecting to one tool name, which the SDK would otherwise reject per request. */
-export function checkToolNames(registry: Registry, scope: Scope): void {
-  const seen = new Map<string, string>();
+const targetKey = (t: Target) =>
+  `${t.app}/${t.operation !== undefined ? `o:${t.operation}` : t.resource !== undefined ? `r:${t.resource}` : `p:${t.prompt ?? ""}`}`;
+
+/**
+ * Fails fast on what the SDK would otherwise reject on every request: two operations or prompts projecting to one
+ * name, or an operation named like the view channel.
+ */
+export function checkMembers(registry: Registry, scope: Scope): void {
+  const tools = new Map<string, string>([[VIEW_CALL_TOOL, "the view channel"]]);
+  const prompts = new Map<string, string>();
   for (const app of appsIn(registry, scope)) {
     for (const [opName, operation] of Object.entries(app.operations)) {
       if (!isTool(operation)) continue;
       const name = toolName(app, opName, operation, scope);
-      const other = seen.get(name);
+      const other = tools.get(name);
       if (other)
-        throw new TypeError(`Operations ${other} and ${app.name}.${opName} both project to MCP tool "${name}".`);
-      seen.set(name, `${app.name}.${opName}`);
+        throw new TypeError(`${other} and operation ${app.name}.${opName} both project to MCP tool "${name}".`);
+      tools.set(name, `Operation ${app.name}.${opName}`);
+    }
+    for (const [promptName, p] of Object.entries(app.prompts)) {
+      const name = memberName(app, p.mcp?.name ?? promptName, scope);
+      const other = prompts.get(name);
+      if (other)
+        throw new TypeError(`Prompts ${other} and ${app.name}.${promptName} both project to MCP prompt "${name}".`);
+      prompts.set(name, `${app.name}.${promptName}`);
     }
   }
 }
 
 const CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities";
 
+interface ClientCapabilities {
+  elicitation?: unknown;
+  extensions?: Record<string, unknown>;
+}
+
 /**
- * Whether this client can answer questions. 2026-07-28 clients declare elicitation per request; 2025-era clients
- * declared it once at initialize. Over stateless HTTP a 2025-era client is reported as able, so it gets the clear
- * "needs a 2026-07-28 client" error rather than a silent decline.
+ * What the client declared: 2026-07-28 clients per request, 2025-era clients once at initialize. Undefined for a
+ * 2025-era client over stateless HTTP, where the initialize declaration is not kept.
+ */
+function clientCapabilities(ctx: ServerContext, server: McpServer, serving: Serving): ClientCapabilities | undefined {
+  if (serving.era === "legacy") {
+    if (!serving.connected) return undefined;
+    // The deprecation points modern requests at the envelope; 2025-era connections only have the initialize value.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    return (server.server.getClientCapabilities() as ClientCapabilities | undefined) ?? {};
+  }
+  const envelope = ctx.mcpReq.envelope as Record<string, ClientCapabilities | undefined> | undefined;
+  return envelope?.[CLIENT_CAPABILITIES] ?? {};
+}
+
+/**
+ * Whether this client can answer questions. A 2025-era client over stateless HTTP is reported as able, so it gets
+ * the clear "needs a 2026-07-28 client" error rather than a silent decline.
  */
 function clientCanAsk(ctx: ServerContext, server: McpServer, serving: Serving): boolean {
-  // The deprecation points modern requests at the envelope; 2025-era connections only have the initialize value.
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
-  if (serving.era === "legacy") return serving.connected ? !!server.server.getClientCapabilities()?.elicitation : true;
-  const envelope = ctx.mcpReq.envelope as Record<string, { elicitation?: unknown } | undefined> | undefined;
-  return !!envelope?.[CLIENT_CAPABILITIES]?.elicitation;
+  const declared = clientCapabilities(ctx, server, serving);
+  return declared === undefined || !!declared.elicitation;
 }
 
 function callOptions(
@@ -347,25 +379,13 @@ function surfaceOf(ctx: ServerContext, operation: Operation): Surface {
 }
 
 /**
- * Whether the client declared MCP Apps support. The view channel answers only such clients: answers travel as tool
- * arguments, so a model must not be able to call it, and only Apps hosts hide app-only tools from the model.
+ * Whether the client may be an MCP Apps host. Clients that declare what they support must declare the extension;
+ * a 2025-era client over stateless HTTP cannot be asked, so the view token alone decides.
  */
-function clientDeclaresApps(ctx: ServerContext, server: McpServer, serving: Serving): boolean {
-  type Caps = { extensions?: Record<string, unknown> } | undefined;
-  if (serving.era === "legacy") {
-    // 2025-era clients declare once at initialize, which stateless HTTP does not keep.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    return serving.connected ? !!(server.server.getClientCapabilities() as Caps)?.extensions?.[APPS_EXTENSION] : false;
-  }
-  const envelope = ctx.mcpReq.envelope as Record<string, Caps> | undefined;
-  return !!envelope?.[CLIENT_CAPABILITIES]?.extensions?.[APPS_EXTENSION];
+function clientMayBeAppsHost(ctx: ServerContext, server: McpServer, serving: Serving): boolean {
+  const declared = clientCapabilities(ctx, server, serving);
+  return declared === undefined || !!declared.extensions?.[APPS_EXTENSION];
 }
-
-/** What the view channel returns, in `structuredContent` (and as JSON text): never in `_meta`, which hosts may drop. */
-export type ViewCallResult =
-  | { resultType: "complete"; data: unknown; view?: ViewResultMeta }
-  | { resultType: "input_required"; inputRequests: Record<string, unknown>; requestState: string }
-  | { resultType: "error"; error: { kind: string; message: string; issues?: readonly unknown[] } };
 
 function viewCallResult(result: ViewCallResult): CallToolResult {
   return {
@@ -395,6 +415,7 @@ const viewCallSchema: JsonSchema = {
   type: "object",
   properties: {
     app: { type: "string", description: "The app that owns the operation." },
+    token: { type: "string", description: "The view token from the view's boot." },
     operation: { type: "string", description: "The operation to call; it must be visible to views." },
     input: { type: "object", description: "The operation's input." },
     resume: {
@@ -404,7 +425,7 @@ const viewCallSchema: JsonSchema = {
       required: ["requestState"],
     },
   },
-  required: ["app", "operation"],
+  required: ["app", "operation", "token"],
 };
 
 const fingerprints = new WeakMap<Operation, Promise<string>>();
@@ -414,9 +435,19 @@ const fingerprint = (operation: Operation) => {
   return version;
 };
 
-/** Each bound operation, keyed `app.op`, with the view it renders. */
+interface Binding {
+  view: View;
+  op: string;
+  component?: string;
+}
+
+const bindingsByRegistry = new WeakMap<Registry, Map<string, Binding>>();
+
+/** Each bound operation, keyed `app.op`, with the view it renders. Registries are fixed, so this is computed once. */
 function bindings(registry: Registry) {
-  const bound = new Map<string, { view: View; op: string; component?: string }>();
+  const cached = bindingsByRegistry.get(registry);
+  if (cached) return cached;
+  const bound = new Map<string, Binding>();
   for (const app of registry.apps.values()) {
     for (const v of Object.values(app.views)) {
       for (const b of v.boundTo) {
@@ -425,37 +456,55 @@ function bindings(registry: Registry) {
       }
     }
   }
+  bindingsByRegistry.set(registry, bound);
   return bound;
 }
 
+const viewMetaFor = async (binding: Binding, op: string, operation: Operation): Promise<ViewResultMeta> => ({
+  view: viewId(binding.view),
+  op,
+  ...(binding.component ? { component: binding.component } : {}),
+  schemaVersion: await fingerprint(operation),
+});
+
 /**
- * What a view's shell needs: the tool name of every operation it and its embeds call or are bound to, on this
- * endpoint. Operations of apps outside the scope are left out, so calls to them fail clearly in the view.
+ * How a view and its embeds reach operations on this endpoint, keyed `app.op`: a tool for each operation they call
+ * or are bound to that views may call, and the output fingerprint of each bound one. Operations of apps outside
+ * the scope are left out, so calls to them fail clearly in the view.
  */
-async function viewBoot(registry: Registry, root: View, scope: Scope): Promise<ViewBoot> {
-  const boot: ViewBoot = {
-    view: viewId(root),
-    channel: "mcp",
-    operations: {},
-    features: {},
-    viewCallTool: VIEW_CALL_TOOL,
-    ...(root.hostStyles ? { hostStyles: root.hostStyles } : {}),
-  };
+async function viewRoutes(registry: Registry, root: View, scope: Scope): Promise<ViewBoot["operations"]> {
+  const routes: ViewBoot["operations"] = {};
   const inScope = new Set(appsIn(registry, scope).map((a) => a.name));
   for (const v of viewClosure(root)) {
-    boot.features[viewId(v)] = v.features;
     const app = registry.apps.get(v.app);
     if (!app || !inScope.has(v.app)) continue;
     const bound = new Set(v.boundTo.map(bindingOp));
     for (const opName of new Set([...v.calls, ...bound])) {
       const operation = app.operations[opName];
       if (!operation || !isTool(operation)) continue;
-      boot.operations[`${v.app}.${opName}`] = {
-        tool: toolName(app, opName, operation, scope),
+      routes[`${v.app}.${opName}`] = {
+        ...(isVisible(operation, "app") ? { tool: toolName(app, opName, operation, scope) } : {}),
         ...(bound.has(opName) ? { schemaVersion: await fingerprint(operation) } : {}),
       };
     }
   }
+  return routes;
+}
+
+/**
+ * What a view's shell needs: its routes, its features, and, when the registry can mint one, the view channel with
+ * a token for this caller. Without a token the view calls tools directly and the host does any asking.
+ */
+async function viewBoot(registry: Registry, root: View, scope: Scope, caller: Caller): Promise<ViewBoot> {
+  const boot: ViewBoot = {
+    view: viewId(root),
+    channel: "mcp",
+    operations: await viewRoutes(registry, root, scope),
+    features: Object.fromEntries(viewClosure(root).map((v) => [viewId(v), v.features])),
+    ...(root.hostStyles ? { hostStyles: root.hostStyles } : {}),
+  };
+  const token = await registry.mintViewToken(viewId(root), caller);
+  if (token) Object.assign(boot, { viewCallTool: VIEW_CALL_TOOL, viewToken: token });
   return boot;
 }
 
@@ -479,46 +528,79 @@ function contents(uri: string, mimeType: string, data: unknown) {
   return mimeType.startsWith("text/") ? { uri, mimeType, text: data } : { uri, mimeType, blob: data };
 }
 
-/** Registers {@link VIEW_CALL_TOOL}: views call operations through it and get questions back as data. */
+/** The view channel stands for every operation views may call, so its hints are the most cautious among them. */
+function channelAnnotations(registry: Registry, scope: Scope) {
+  const ops = appsIn(registry, scope).flatMap((app) =>
+    Object.values(app.operations).filter((operation) => isVisible(operation, "app")),
+  );
+  const readOnly = ops.every((o) => o.annotations.readOnly === true);
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: !readOnly && ops.some((o) => !o.annotations.readOnly && (o.annotations.destructive ?? true)),
+    idempotentHint: ops.every((o) => o.annotations.idempotent === true),
+    openWorldHint: ops.some((o) => o.annotations.openWorld === true),
+  };
+}
+
+const channelUnavailable = (message: string) =>
+  viewCallResult({ resultType: "error", error: { kind: "unavailable", message } });
+
+/**
+ * Registers {@link VIEW_CALL_TOOL}: views call operations through it and get questions back as data. Answers travel
+ * as arguments, so a call must carry the view token from the shell, which models never see in tool results, and
+ * the client must not have declared itself something other than an MCP Apps host.
+ */
 function registerViewChannel(
   server: McpServer,
   options: ProjectionOptions,
   scope: Scope,
   caller: Caller,
   serving: Serving,
-  bound: Map<string, { view: View; op: string; component?: string }>,
+  bound: Map<string, Binding>,
 ) {
   const { registry, logger } = options;
-  const served = new Set(appsIn(registry, scope).map((a) => a.name));
   server.registerTool(
     VIEW_CALL_TOOL,
     {
       title: "View call",
       description: "Calls an operation on behalf of a view. Only views use this tool.",
       inputSchema: publishOnly(viewCallSchema),
+      annotations: channelAnnotations(registry, scope),
       _meta: { ui: { visibility: ["app"] } },
     },
     async (args, ctx) => {
-      const declared = clientDeclaresApps(ctx, server, serving);
-      const { app, operation, input, resume } = args as {
+      const { app, operation, input, token, resume } = args as {
         app?: unknown;
         operation?: unknown;
         input?: unknown;
+        token?: unknown;
         resume?: { requestState?: unknown; inputResponses?: unknown };
       };
-      logger?.debug("MCP view call", { app: String(app), operation: String(operation), appsClient: declared });
-      if (!declared) {
-        return viewCallResult({
-          resultType: "error",
-          error: { kind: "unavailable", message: "Only MCP Apps hosts may use the view channel." },
-        });
-      }
       try {
-        if (typeof app !== "string" || typeof operation !== "string" || !served.has(app)) {
+        logger?.debug("MCP view call", { app: String(app), operation: String(operation) });
+        if (typeof token !== "string" || !clientMayBeAppsHost(ctx, server, serving)) {
+          return channelUnavailable("Only views served by an MCP Apps host may use the view channel.");
+        }
+        let viewName: string;
+        try {
+          viewName = await registry.openViewToken(token, caller);
+        } catch {
+          // Expired or foreign: the view falls back to calling tools directly, where the host does the asking.
+          return channelUnavailable("The view token is not valid here; call the operation's tool instead.");
+        }
+        const [viewApp = "", name = ""] = viewName.split("/");
+        const root = registry.getView(viewApp, name);
+        const route = root && (await viewRoutes(registry, root, scope))[`${String(app)}.${String(operation)}`];
+        if (typeof app !== "string" || typeof operation !== "string" || !route?.tool) {
           throw new SyrinxError("not_found", `Unknown operation "${String(app)}.${String(operation)}".`);
         }
         const call = callOptions(ctx, caller, options, true, "app");
-        if (typeof resume?.requestState === "string") {
+        if (resume !== undefined) {
+          if (typeof resume.requestState !== "string") {
+            throw new SyrinxError("validation", "resume needs the requestState of the call it answers.", [
+              { path: "resume.requestState", message: "Required." },
+            ]);
+          }
           const responses = resume.inputResponses;
           call.resume = {
             requestState: resume.requestState,
@@ -535,15 +617,7 @@ function registerViewChannel(
         }
         const binding = bound.get(`${app}.${operation}`);
         const target = registry.get(app, operation);
-        const view: ViewResultMeta | undefined =
-          binding && target
-            ? {
-                view: viewId(binding.view),
-                op: operation,
-                ...(binding.component ? { component: binding.component } : {}),
-                schemaVersion: await fingerprint(target),
-              }
-            : undefined;
+        const view = binding && target ? await viewMetaFor(binding, operation, target) : undefined;
         return viewCallResult({ resultType: "complete", data: result.data, ...(view ? { view } : {}) });
       } catch (error) {
         const e = asSyrinx(error, logger);
@@ -588,7 +662,16 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
       },
     },
   );
-  const allows = (target: Parameters<Registry["allows"]>[0]) => registry.allows(target, caller);
+  const apps = appsIn(registry, scope);
+  // Checked together up front: isEnabled may be a lookup, and a request should not wait on each in turn.
+  const targets: Target[] = apps.flatMap((app) => [
+    ...Object.keys(app.operations).map((operation) => ({ app: app.name, operation })),
+    ...Object.keys(app.resources).map((resource) => ({ app: app.name, resource })),
+    ...Object.keys(app.prompts).map((prompt) => ({ app: app.name, prompt })),
+  ]);
+  const verdicts = await Promise.all(targets.map((t) => registry.allows(t, caller)));
+  const allowed = new Set(targets.filter((_t, i) => verdicts[i]).map(targetKey));
+  const allows = (target: Target) => allowed.has(targetKey(target));
   const completable = {
     prompts: new Map<string, { app: string; prompt: string }>(),
     resources: new Map<string, { app: string; resource: string }>(),
@@ -597,11 +680,11 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
   const { views } = options;
   const bound = views ? bindings(registry) : new Map<string, never>();
 
-  for (const app of appsIn(registry, scope)) {
+  for (const app of apps) {
     for (const [opName, operation] of Object.entries(app.operations)) {
       // Operations only views call are listed only when views are served; without views nothing would call them.
       const listed = isVisible(operation, "model") || (views !== undefined && isVisible(operation, "app"));
-      if (!listed || !(await allows({ app: app.name, operation: opName }))) continue;
+      if (!listed || !allows({ app: app.name, operation: opName })) continue;
       const { annotations, mcp } = operation;
       const structured = mcp?.structured !== false;
       const binding = bound.get(`${app.name}.${opName}`);
@@ -659,12 +742,7 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
             const content = mcp?.content
               ? [...mcp.content(result.data)]
               : [{ type: "text" as const, text: JSON.stringify(result.data) }];
-            const viewMeta: ViewResultMeta | undefined = binding && {
-              view: viewId(binding.view),
-              op: opName,
-              ...(binding.component ? { component: binding.component } : {}),
-              schemaVersion: await fingerprint(operation),
-            };
+            const viewMeta = binding && (await viewMetaFor(binding, opName, operation));
             return {
               content,
               ...(structured ? { structuredContent: result.data as Record<string, unknown> } : {}),
@@ -678,7 +756,7 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
     }
 
     for (const [resName, res] of Object.entries(app.resources)) {
-      if (!(await allows({ app: app.name, resource: resName }))) continue;
+      if (!allows({ app: app.name, resource: resName })) continue;
       const mimeType = res.mimeType ?? "application/json";
       const read = async (uri: URL, variables: Record<string, unknown>, ctx: ServerContext) => {
         try {
@@ -715,7 +793,7 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
         },
         async () => {
           try {
-            const shell = await views?.render(v, await viewBoot(registry, v, scope));
+            const shell = await views?.render(v, await viewBoot(registry, v, scope, caller));
             if (!shell) throw new SyrinxError("internal", `No shell for view ${viewId(v)}.`);
             return { contents: [{ uri, mimeType: VIEW_MIME_TYPE, text: shell.html, _meta: uiMeta(shell.csp) }] };
           } catch (error) {
@@ -726,7 +804,7 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
     }
 
     for (const [promptName, p] of Object.entries(app.prompts)) {
-      if (!(await allows({ app: app.name, prompt: promptName }))) continue;
+      if (!allows({ app: app.name, prompt: promptName })) continue;
       const render = async (args: unknown, ctx: ServerContext) => {
         try {
           const call = callOptions(ctx, caller, options, clientCanAsk(ctx, server, serving));

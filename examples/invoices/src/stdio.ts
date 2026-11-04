@@ -1,13 +1,30 @@
-import { appendFileSync, existsSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { serveRegistryStdio } from "@syrinx/mcp/stdio";
 import { loadViewShells } from "@syrinx/ui/server";
 import { createInvoicesHost } from "./host.js";
 
 // For local MCP clients such as VS Code. stdout carries the protocol, so everything else goes to stderr.
-const logFile = process.env.SYRINX_LOG_FILE;
+function openLogFile(path: string | undefined) {
+  if (!path) return undefined;
+  try {
+    // The default path is under dist/, which exists only after a views build.
+    mkdirSync(dirname(path), { recursive: true });
+    const stream = createWriteStream(path, { flags: "a" });
+    // Logging must never take the server down: a failing log file just stops receiving lines.
+    stream.on("error", (error) => {
+      console.error(`Cannot write ${path}: ${String(error)}`);
+    });
+    return stream;
+  } catch (error) {
+    console.error(`Cannot open ${path}: ${String(error)}`);
+    return undefined;
+  }
+}
+const logFile = openLogFile(process.env.SYRINX_LOG_FILE);
 function log(level: string, message: string, attributes?: Record<string, unknown>) {
   const line = `${new Date().toISOString()} ${level} ${message}${attributes ? ` ${JSON.stringify(attributes)}` : ""}`;
-  if (logFile) appendFileSync(logFile, `${line}\n`);
+  if (logFile?.writable) logFile.write(`${line}\n`);
   if (level !== "debug") console.error(line);
 }
 

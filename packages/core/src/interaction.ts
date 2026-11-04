@@ -83,7 +83,7 @@ export interface RequestStateCodec {
 export function createRequestStateCodec(secrets: Secret | readonly Secret[], ttlSeconds = 600): RequestStateCodec {
   const list = typeof secrets === "string" || secrets instanceof Uint8Array ? [secrets] : secrets;
   if (list.length === 0) throw new RangeError("requestStateKey needs at least one key.");
-  const keys = Promise.all(list.map(sealingKey));
+  const keys = Promise.all(list.map((secret) => sealingKey(secret)));
   const invalid = (why: string) =>
     errors.validation(`requestState ${why}; start the call again without it.`, [
       { path: "requestState", message: why },
@@ -139,6 +139,58 @@ function parseResponse(value: unknown): InputResponse | undefined {
     return undefined;
   }
   return content === undefined ? { action } : { action, content: content as Record<string, unknown> };
+}
+
+interface ViewTokenPayload {
+  v: 1;
+  exp: number;
+  view: string;
+  principal: string;
+  tenant: string | undefined;
+}
+
+/** Who a view token was minted for. A token minted for one caller is rejected for any other. */
+export interface ViewTokenBinding {
+  principal: string;
+  tenant: string | undefined;
+}
+
+export interface ViewTokenCodec {
+  mint(view: string, binding: ViewTokenBinding): Promise<string>;
+  /** The view the token was minted for. Throws a validation error, with an issue on `token`, when it is invalid. */
+  open(token: string, binding: ViewTokenBinding): Promise<string>;
+}
+
+/**
+ * View tokens prove a call comes from a rendered view: the token travels only in the view's shell, which hosts load
+ * into the iframe, never in tool results the model reads. Sealed with the request state secrets under their own
+ * key, so neither token opens as the other.
+ */
+export function createViewTokenCodec(secrets: Secret | readonly Secret[], ttlSeconds = 86_400): ViewTokenCodec {
+  const list = typeof secrets === "string" || secrets instanceof Uint8Array ? [secrets] : secrets;
+  if (list.length === 0) throw new RangeError("requestStateKey needs at least one key.");
+  const keys = Promise.all(list.map((secret) => sealingKey(secret, "view-token/v1")));
+  const invalid = (why: string) =>
+    errors.validation(`The view token ${why}; reload the view.`, [{ path: "token", message: why }]);
+
+  return {
+    async mint(view, binding) {
+      const [current] = await keys;
+      if (!current) throw new SyrinxError("internal", "requestStateKey needs at least one key.");
+      const payload: ViewTokenPayload = { v: 1, exp: Date.now() + ttlSeconds * 1000, view, ...binding };
+      return seal(current, payload);
+    },
+
+    async open(token, binding) {
+      const payload = (await unseal(await keys, token)) as ViewTokenPayload | undefined;
+      if (payload?.v !== 1 || typeof payload.view !== "string") throw invalid("is not valid");
+      if (payload.exp < Date.now()) throw invalid("has expired");
+      if (payload.principal !== binding.principal || payload.tenant !== binding.tenant) {
+        throw invalid("belongs to another caller");
+      }
+      return payload.view;
+    },
+  };
 }
 
 /**

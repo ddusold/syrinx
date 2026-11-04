@@ -1,5 +1,6 @@
 import type { Operation } from "./app.js";
 import { canonicalJson, sha256 } from "./crypto.js";
+import type { FieldIssue } from "./errors.js";
 import { toJsonSchema } from "./schema.js";
 import type { StandardSchemaV1 } from "./standard-schema.js";
 
@@ -139,10 +140,29 @@ export interface ViewResultMeta {
   schemaVersion: string;
 }
 
+/**
+ * What a view channel call returns, in `structuredContent` and as JSON text: never in `_meta`, which hosts may drop.
+ * Questions arrive as embedded `elicitation/create` requests.
+ */
+export type ViewCallResult =
+  | { resultType: "complete"; data: unknown; view?: ViewResultMeta }
+  | {
+      resultType: "input_required";
+      inputRequests: Record<
+        string,
+        { method?: string; params?: { mode?: string; message?: string; requestedSchema?: unknown } }
+      >;
+      requestState: string;
+    }
+  | { resultType: "error"; error: { kind: string; message: string; issues?: readonly FieldIssue[] } };
+
 /** How a view reaches one operation from inside a host. */
 export interface ViewOperationRoute {
-  /** The tool name on the endpoint the view was served from. */
-  tool: string;
+  /**
+   * The tool name on the endpoint the view was served from. Absent when views may not call the operation (it is
+   * bound to the view but visible to the model only), so the route carries just the fingerprint.
+   */
+  tool?: string;
   /** Present for bound operations: the output schema fingerprint the bundle was built against. */
   schemaVersion?: string;
 }
@@ -170,6 +190,11 @@ export interface ViewBoot {
    * the preview, and when the endpoint serves no such tool.
    */
   viewCallTool?: string;
+  /**
+   * Proves calls through {@link viewCallTool} come from this view, for its caller. It travels only in the shell,
+   * never in tool results, so a model that sees the channel tool cannot answer the view's questions for the user.
+   */
+  viewToken?: string;
   /** Preview channel only: the data and part to show. */
   preview?: { data: unknown; op?: string; component?: string };
 }

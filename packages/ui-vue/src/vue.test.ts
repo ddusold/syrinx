@@ -181,6 +181,19 @@ describe("Vue views", () => {
     expect(element.querySelector(".detail")).not.toBeNull();
   });
 
+  it("seeds a view context without a provider from the first data, which arrives after mounting", async () => {
+    document.body.innerHTML = `<div id="d"></div>`;
+    const element = must(document.querySelector<HTMLElement>("#d"));
+    const { b, push } = bridge();
+    // Detail alone, as when sliced: no ViewContext above it, so it keeps a local selection.
+    await startView({ views: { "invoices/browser": toView(Detail) }, boot, bridge: b, element });
+    expect(element.querySelector(".detail h2")?.textContent).toBe("none");
+    push({ data, view: { view: "invoices/browser", op: "list", schemaVersion: "" } });
+    await nextTick();
+    await nextTick();
+    expect(element.querySelector(".detail h2")?.textContent).toBe("inv_1");
+  });
+
   it("renders a default dialog for questions and answers with the user's choice", async () => {
     document.body.innerHTML = `<div id="q"></div>`;
     const element = must(document.querySelector<HTMLElement>("#q"));

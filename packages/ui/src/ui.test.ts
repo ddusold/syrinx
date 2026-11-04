@@ -239,7 +239,7 @@ describe("startView", () => {
   });
 
   it("routes calls through the view channel only when the root renders prompts and the server has one", async () => {
-    const seen: (string | undefined)[] = [];
+    const seen: ({ tool: string; token: string } | undefined)[] = [];
     const cases = [
       { handlesPrompts: true, viewCallTool: "syrinx_view_call" },
       { handlesPrompts: false, viewCallTool: "syrinx_view_call" },
@@ -252,7 +252,7 @@ describe("startView", () => {
         return Promise.resolve({ data: {} });
       };
       const module = { ...recorder().module, handlesPrompts };
-      const withChannel = { ...boot, ...(viewCallTool ? { viewCallTool } : {}) };
+      const withChannel = { ...boot, ...(viewCallTool ? { viewCallTool, viewToken: "tok" } : {}) };
       const started = await startView({
         views: { "invoices/browser": module },
         boot: withChannel,
@@ -261,7 +261,7 @@ describe("startView", () => {
       });
       await started.props().emit.call("send", { id: "inv_1" });
     }
-    expect(seen).toEqual(["syrinx_view_call", undefined, undefined]);
+    expect(seen).toEqual([{ tool: "syrinx_view_call", token: "tok" }, undefined, undefined]);
   });
 
   it("refreshes by repeating the bound operation that produced the data, keeping its component", async () => {
@@ -384,6 +384,17 @@ describe("startView", () => {
     expect(unmounts).toEqual(["invoices/browser", "customers/badge"]);
     expect(last("invoices/browser")).toMatchObject({ view: "invoices/browser", canGoBack: false });
     await expect(last("invoices/browser")?.back()).rejects.toMatchObject({ kind: "unreachable" });
+  });
+
+  it("keeps the frame when an embedded view's call returns that view's own data", async () => {
+    const { start, unmounts, last } = twoViews();
+    const started = await start();
+    await started.props().emit.call("list", {});
+    const browser = last("invoices/browser");
+    const badge = browser?.runtime.childProps("customers/badge", { name: "Acme" }, browser.contexts);
+    await expect(badge?.emit.call("open", { id: "c_1" })).resolves.toEqual({ name: "Acme" });
+    expect(unmounts).toEqual([]);
+    expect(last("invoices/browser")).toMatchObject({ view: "invoices/browser", data: { items: ["invoices_list"] } });
   });
 
   it("calls an operation of another app by its qualified name, and moves to the view it binds", async () => {

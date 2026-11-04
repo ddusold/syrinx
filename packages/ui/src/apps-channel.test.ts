@@ -266,7 +266,7 @@ describe("MCP bridge", () => {
       },
     });
     const bridge = createMcpBridge(open(host));
-    const target = { app: "invoices", operation: "void", viewCall: "syrinx_view_call" };
+    const target = { app: "invoices", operation: "void", viewCall: { tool: "syrinx_view_call", token: "tok" } };
     await expect(bridge.call("void", { id: "inv_1" }, target)).resolves.toEqual({
       input: { requests: { c: { message: "Void?", fields: {} } }, requestState: "sealed" },
     });
@@ -279,12 +279,12 @@ describe("MCP bridge", () => {
     expect(calls).toEqual([
       {
         name: "syrinx_view_call",
-        arguments: { app: "invoices", operation: "void", input: { id: "inv_1" } },
+        arguments: { app: "invoices", operation: "void", input: { id: "inv_1" }, token: "tok" },
         _meta: { "io.github.ddusold.syrinx/surface": "app" },
       },
       {
         name: "syrinx_view_call",
-        arguments: { app: "invoices", operation: "void", input: { id: "inv_1" }, resume },
+        arguments: { app: "invoices", operation: "void", input: { id: "inv_1" }, token: "tok", resume },
         _meta: { "io.github.ddusold.syrinx/surface": "app" },
       },
     ]);
@@ -297,7 +297,11 @@ describe("MCP bridge", () => {
     });
     const bridge = createMcpBridge(open(host));
     await expect(
-      bridge.call("send", {}, { app: "invoices", operation: "send", viewCall: "syrinx_view_call" }),
+      bridge.call(
+        "send",
+        {},
+        { app: "invoices", operation: "send", viewCall: { tool: "syrinx_view_call", token: "tok" } },
+      ),
     ).resolves.toMatchObject({ error: { kind: "forbidden", message: "no" } });
   });
 
@@ -309,13 +313,29 @@ describe("MCP bridge", () => {
           : { structuredContent: { id: "inv_1" } },
     });
     const bridge = createMcpBridge(open(host));
-    const target = { app: "invoices", operation: "send", viewCall: "syrinx_view_call" };
+    const target = { app: "invoices", operation: "send", viewCall: { tool: "syrinx_view_call", token: "tok" } };
     await expect(bridge.call("send", { id: "inv_1" }, target)).resolves.toEqual({ data: { id: "inv_1" } });
     await bridge.call("send", { id: "inv_1" }, target);
     expect(sent.filter((m) => m.method === "tools/call").map((m) => m.params?.name)).toEqual([
       "syrinx_view_call",
       "send",
       "send", // the channel is not tried again
+    ]);
+  });
+
+  it("falls back when the host refuses to relay the channel tool", async () => {
+    const { host, sent } = fakeHost({
+      "tools/call": (params) =>
+        params.name === "syrinx_view_call"
+          ? { isError: true, content: [{ type: "text", text: "Tool not allowed" }] }
+          : { structuredContent: { id: "inv_1" } },
+    });
+    const bridge = createMcpBridge(open(host));
+    const target = { app: "invoices", operation: "send", viewCall: { tool: "syrinx_view_call", token: "tok" } };
+    await expect(bridge.call("send", { id: "inv_1" }, target)).resolves.toEqual({ data: { id: "inv_1" } });
+    expect(sent.filter((m) => m.method === "tools/call").map((m) => m.params?.name)).toEqual([
+      "syrinx_view_call",
+      "send",
     ]);
   });
 

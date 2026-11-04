@@ -1,5 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { createRegistry, defineApp, op, view, type AuditRecord, type ViewBoot } from "@syrinx/core";
+import { createRegistry, defineApp, op, prompt, view, type AuditRecord, type ViewBoot } from "@syrinx/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -87,7 +87,7 @@ const invoices = defineApp({
       description: "Browse and open the organization's invoices, and send a draft to its customer.",
       entry,
       boundTo: ["list", { op: "get", component: "detail" }],
-      calls: ["send", "select"],
+      calls: ["send", "select", "void"],
       embeds: [customers.views.badge],
       features: { actions: true },
       hostStyles: "ignore",
@@ -211,6 +211,7 @@ describe("views over MCP", () => {
     expect(single?.operations).toEqual({
       "invoices.send": { tool: "send" },
       "invoices.select": { tool: "select" },
+      "invoices.void": { tool: "void" },
       "invoices.list": { tool: "list", schemaVersion: expect.any(String) as string },
       "invoices.get": { tool: "get", schemaVersion: expect.any(String) as string },
     });
@@ -347,19 +348,26 @@ describe("views over MCP", () => {
       const result = await client.callTool({ name: VIEW_CALL_TOOL, arguments: args });
       return { isError: result.isError === true, ...(result.structuredContent as Envelope) };
     };
-    const appsClient = () => connect("/mcp/invoices", surface, { era: "auto", apps: true });
+    /** Opens the browser view as a host would, and returns the token its shell carries. */
+    const tokenFor = async (client: Client) => {
+      await client.readResource({ uri: "ui://invoices/browser" });
+      return rendered.at(-1)?.boot.viewToken ?? "";
+    };
+    const appsClient = async (era: "legacy" | "auto" = "auto") => {
+      const client = await connect("/mcp/invoices", surface, { era, apps: true });
+      return { client, token: await tokenFor(client) };
+    };
 
     it("returns questions to the view as data and finishes on the answer it sends back", async () => {
-      const client = await appsClient();
-      const asked = await viewCall(client, { app: "invoices", operation: "void", input: { id: "inv_1" } });
+      const { client, token } = await appsClient();
+      const call = { app: "invoices", operation: "void", input: { id: "inv_1" }, token };
+      const asked = await viewCall(client, call);
       expect(asked).toMatchObject({ isError: false, resultType: "input_required" });
       const [key, request] = Object.entries(asked.inputRequests ?? {})[0] ?? [];
       expect(request).toMatchObject({ method: "elicitation/create", params: { message: "Void invoice inv_1?" } });
 
       const done = await viewCall(client, {
-        app: "invoices",
-        operation: "void",
-        input: { id: "inv_1" },
+        ...call,
         resume: {
           requestState: asked.requestState,
           inputResponses: { [key ?? ""]: { action: "accept", content: {} } },
@@ -372,52 +380,88 @@ describe("views over MCP", () => {
       ]);
     });
 
-    it("cancels on decline and refuses answers bound to other input", async () => {
-      const client = await appsClient();
-      const asked = await viewCall(client, { app: "invoices", operation: "void", input: { id: "inv_1" } });
+    it("cancels on decline, refuses answers bound to other input, and requires the state answers belong to", async () => {
+      const { client, token } = await appsClient();
+      const asked = await viewCall(client, { app: "invoices", operation: "void", input: { id: "inv_1" }, token });
       const key = Object.keys(asked.inputRequests ?? {})[0] ?? "";
-      const answer = (action: string, id = "inv_1") =>
+      const answer = (action: string, id = "inv_1", state: { requestState?: string } = asked) =>
         viewCall(client, {
           app: "invoices",
           operation: "void",
           input: { id },
-          resume: { requestState: asked.requestState, inputResponses: { [key]: { action } } },
+          token,
+          resume: { requestState: state.requestState, inputResponses: { [key]: { action } } },
         });
       expect(await answer("decline")).toMatchObject({ isError: true, error: { kind: "cancelled" } });
       expect(await answer("accept", "inv_2")).toMatchObject({ isError: true, resultType: "error" });
+      expect(await answer("accept", "inv_1", {})).toMatchObject({ error: { kind: "validation" } });
     });
 
-    it("carries view metadata for bound operations and keeps scope and visibility", async () => {
-      const client = await appsClient();
-      expect(await viewCall(client, { app: "invoices", operation: "list" })).toMatchObject({
+    it("serves 2025-era hosts over stateless HTTP, whose declarations are not kept, on the token alone", async () => {
+      const { client, token } = await appsClient("legacy");
+      expect(
+        await viewCall(client, { app: "invoices", operation: "void", input: { id: "inv_1" }, token }),
+      ).toMatchObject({ resultType: "input_required" });
+    });
+
+    it("carries view metadata for bound operations, and only reaches what the token's view reaches", async () => {
+      const { client, token } = await appsClient();
+      expect(await viewCall(client, { app: "invoices", operation: "list", token })).toMatchObject({
         resultType: "complete",
         view: { view: "invoices/browser", op: "list" },
       });
       // customers is not served on /mcp/invoices, and purge is not visible to views.
-      expect(await viewCall(client, { app: "customers", operation: "get", input: { name: "Acme" } })).toMatchObject({
-        error: { kind: "not_found" },
-      });
-      expect(await viewCall(client, { app: "invoices", operation: "purge" })).toMatchObject({
-        error: { kind: "not_found" },
-      });
+      for (const [app, operation] of [
+        ["customers", "get"],
+        ["invoices", "purge"],
+      ]) {
+        expect(await viewCall(client, { app, operation, input: {}, token })).toMatchObject({
+          error: { kind: "not_found" },
+        });
+      }
     });
 
-    it("refuses clients that do not declare MCP Apps, so a model cannot answer for the user", async () => {
-      for (const client of [
-        await connect("/mcp/invoices", surface, { era: "auto" }),
-        await connect("/mcp/invoices", surface, { era: "legacy", apps: true }),
-      ]) {
-        expect(await viewCall(client, { app: "invoices", operation: "void", input: { id: "inv_1" } })).toMatchObject({
-          isError: true,
-          error: { kind: "unavailable" },
-        });
+    it("refuses calls without a valid token, or from clients that declare no MCP Apps support", async () => {
+      const { token } = await appsClient();
+      const model = await connect("/mcp/invoices", surface, { era: "auto" });
+      const apps = await connect("/mcp/invoices", surface, { era: "auto", apps: true });
+      const forged = `${token.slice(0, -4)}AAAA`;
+      for (const [client, args] of [
+        [model, { token }],
+        [apps, {}],
+        [apps, { token: forged }],
+      ] as const) {
+        const call = { app: "invoices", operation: "void", input: { id: "inv_1" }, ...args };
+        expect(await viewCall(client, call)).toMatchObject({ isError: true, error: { kind: "unavailable" } });
       }
       expect(audit).toEqual([]);
     });
 
-    it("boots views with the channel's name", async () => {
-      await (await appsClient()).readResource({ uri: "ui://invoices/browser" });
+    it("boots views with the channel's name and a token, and hints as cautiously as its riskiest operation", async () => {
+      const { client, token } = await appsClient();
       expect(rendered[0]?.boot.viewCallTool).toBe(VIEW_CALL_TOOL);
+      expect(token).not.toBe("");
+      const tool = (await client.listTools()).tools.find((t) => t.name === VIEW_CALL_TOOL);
+      expect(tool?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, openWorldHint: false });
+    });
+
+    it("rejects an operation named like the channel at startup", () => {
+      const clash = defineApp({
+        name: "clash",
+        version: "1.0.0",
+        description: "Clashes with the view channel.",
+        operations: {
+          call: op({
+            description: "Named like the view channel.",
+            input: z.object({}),
+            output: z.object({}),
+            annotations: { readOnly: true },
+            mcp: { name: VIEW_CALL_TOOL },
+            handler: () => ({}),
+          }),
+        },
+      });
+      expect(() => createMcpSurface({ ...options, registry: createRegistry([clash]) })).toThrow(/view channel/);
     });
   });
 
@@ -427,5 +471,28 @@ describe("views over MCP", () => {
     expect(tools.map((t) => t.name)).toEqual(["list", "get", "send", "void", "purge"]);
     expect(tools.every((t) => t._meta?.ui === undefined)).toBe(true);
     expect((await client.listResources()).resources).toEqual([]);
+  });
+});
+
+describe("MCP startup and routing", () => {
+  it("rejects two prompts projecting to one name", () => {
+    const notes = defineApp({
+      name: "notes",
+      version: "1.0.0",
+      description: "Notes.",
+      operations: {},
+      prompts: {
+        recap: prompt({ description: "Recap the notes.", render: () => "Recap." }),
+        summary: prompt({ description: "Summarize the notes.", mcp: { name: "recap" }, render: () => "Sum." }),
+      },
+    });
+    expect(() => createMcpSurface({ ...options, registry: createRegistry([notes]) })).toThrow(
+      /MCP prompt "notes_recap"/,
+    );
+  });
+
+  it("answers 404 for a malformed app path", async () => {
+    const response = await surface.fetch(new Request("http://localhost/mcp/%E0%A4", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(404);
   });
 });
