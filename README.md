@@ -2,7 +2,17 @@
 
 Declare an app once (typed operations, resources and views) and Syrinx serves it as a spec-compliant MCP server, a standard REST API with OpenAPI 3.1, and static UI for MCP Apps hosts, iframes and your own pages.
 
-> **Status:** Phase 3 of 5 in progress, pre-release. Nothing is published to npm yet.
+> **Status:** pre-release. Phases 1–3 of 5 are done; Phase 4 is next. Nothing is published to npm yet, and the production
+> hardening in Phase 4 (secret handling, pluggable idempotency stores, rate limiting, loopback by default) has not landed,
+> so do not run it in production.
+
+| Phase                                                                           | Status  |
+| ------------------------------------------------------------------------------- | ------- |
+| 1 · Core + REST                                                                 | Done    |
+| 2 · MCP                                                                         | Done    |
+| 3 · UI (views over MCP Apps, Vue binding, view builds)                          | Done    |
+| 4 · Compose + secure + persist (hardening, auth, multi-tenancy, Postgres/Redis) | Next    |
+| 5 · Embed channel, CLI, docs site, 0.1 release                                  | Planned |
 
 ## Packages
 
