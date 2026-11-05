@@ -6,9 +6,15 @@ import {
   type Logger,
   type Principal,
 } from "@syrinx/core";
-import { createMcpSurface } from "@syrinx/mcp";
+import { createMcpSurface, type ViewShells } from "@syrinx/mcp";
 import { createRestApp } from "@syrinx/rest";
 import { invoices, type Deps, type Invoice, type InvoiceStore } from "./app.js";
+import { customers, type Customer, type CustomerDeps } from "./customers.js";
+
+export const demoCustomers: Customer[] = [
+  { name: "Acme Corp", tier: "gold", email: "ap@acme.test" },
+  { name: "Globex", tier: "standard", email: "billing@globex.test" },
+];
 
 export function createMemoryStore(seed: Invoice[] = []): InvoiceStore {
   const rows = new Map(seed.map((invoice) => [invoice.id, invoice]));
@@ -53,17 +59,27 @@ function authenticate(request: Request): Principal | undefined {
 
 export interface HostOptions {
   store?: InvoiceStore;
+  /** Built view shells (`loadViewShells` from `@syrinx/ui/server`). Without them MCP serves no UI. */
+  views?: ViewShells;
+  /** Serves hosted view bundles, when the shells reference them by URL. */
+  viewAssets?: (request: Request) => Response | undefined;
   requestStateKey?: string;
   audit?: (record: AuditRecord) => void;
   logger?: Logger;
 }
 
 export function createInvoicesHost(options: HostOptions = {}) {
-  const deps: Deps = {
+  const directory = new Map(demoCustomers.map((c) => [c.name, c]));
+  const deps: Deps & CustomerDeps = {
     store:
-      options.store ?? createMemoryStore([{ id: "inv_1", customer: "Acme Corp", totalCents: 120000, status: "draft" }]),
+      options.store ??
+      createMemoryStore([
+        { id: "inv_1", customer: "Acme Corp", totalCents: 120000, status: "draft" },
+        { id: "inv_2", customer: "Globex", totalCents: 4500, status: "sent" },
+      ]),
+    customers: { find: (name) => Promise.resolve(directory.get(name)) },
   };
-  const registry = createRegistry([invoices], {
+  const registry = createRegistry([customers, invoices], {
     requestStateKey: options.requestStateKey ?? "dev-only-request-state-key-change-me!",
     idempotency: createMemoryIdempotencyStore(),
     ...(options.audit ? { audit: options.audit } : {}),
@@ -73,7 +89,11 @@ export function createInvoicesHost(options: HostOptions = {}) {
     deps,
     authenticate,
     ...(options.logger ? { logger: options.logger } : {}),
-    openapi: { title: "Invoices example", version: invoices.version },
+    openapi: {
+      title: "Invoices example",
+      description: "Invoices and customers served by Syrinx: one registry over REST, MCP and views.",
+      version: invoices.version,
+    },
   });
   // The same registry over MCP: POST /mcp serves every app, POST /mcp/invoices this one alone.
   const mcp = createMcpSurface({
@@ -83,7 +103,10 @@ export function createInvoicesHost(options: HostOptions = {}) {
     name: "invoices-example",
     version: invoices.version,
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.views ? { views: options.views } : {}),
   });
+  const { viewAssets } = options;
+  if (viewAssets) app.get("/views/*", (c) => viewAssets(c.req.raw) ?? c.notFound());
   app.all("/mcp", (c) => mcp.fetch(c.req.raw));
   app.all("/mcp/*", (c) => mcp.fetch(c.req.raw));
   return { registry, app, deps, mcp };

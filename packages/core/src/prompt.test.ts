@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createRegistry, defineApp, lintApp, op, prompt, resource } from "./index.js";
+import { createRegistry, defineApp, lintApp, op, prompt, resource, view } from "./index.js";
 
 const notes = defineApp({
   name: "notes",
@@ -241,6 +241,38 @@ describe("lintApp", () => {
       "sloppy.b description is 6 characters; say what it does and when to use it.",
       "sloppy.b has the same description as sloppy.a; models cannot tell them apart.",
       "sloppy.r has no description.",
+    ]);
+  });
+
+  it("asks for a description on a view a model can open, and not on one only the app opens", () => {
+    const entry = new URL("./views/View.vue", import.meta.url);
+    const page = (visibility: readonly ("model" | "app" | "rest")[], description?: string) =>
+      defineApp({
+        name: "pages",
+        version: "0.0.0",
+        description: "Pages.",
+        operations: {
+          get: op({
+            description: "Open the settings page and return its values.",
+            input: z.object({}),
+            output: z.null(),
+            visibility,
+            handler: () => null,
+          }),
+        },
+        views: { settings: view({ entry, boundTo: ["get"], ...(description ? { description } : {}) }) },
+      });
+    expect(lintApp(page(["model", "app"]))).toEqual([
+      {
+        target: "pages.views.settings",
+        message:
+          "has no description; say what the page does and when to open it, so a model can match a request to it.",
+      },
+    ]);
+    expect(lintApp(page(["model", "app"], "Edit the organization's name, branding and support email."))).toEqual([]);
+    expect(lintApp(page(["app", "rest"]))).toEqual([]);
+    expect(lintApp(page(["model", "app"], "Settings.")).map((w) => w.message)).toEqual([
+      "description is 9 characters; say what it does and when to use it.",
     ]);
   });
 });

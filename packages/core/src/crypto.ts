@@ -29,13 +29,16 @@ export async function sha256(text: string): Promise<string> {
 /** A secret for sealing tokens: at least 32 bytes, as text or raw bytes. */
 export type Secret = string | Uint8Array;
 
-/** Derives an AES-256-GCM key from a secret with HKDF, so any 32+ byte secret becomes a proper encryption key. */
-export async function sealingKey(secret: Secret): Promise<CryptoKey> {
+/**
+ * Derives an AES-256-GCM key from a secret with HKDF, so any 32+ byte secret becomes a proper encryption key. Each
+ * purpose gets its own key, so a token sealed for one purpose never opens as another.
+ */
+export async function sealingKey(secret: Secret, purpose = "request-state/v1"): Promise<CryptoKey> {
   const raw = typeof secret === "string" ? encoder.encode(secret) : new Uint8Array(secret);
   if (raw.byteLength < 32) throw new RangeError("Sealing keys must be at least 32 bytes.");
   const base = await crypto.subtle.importKey("raw", raw, "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
-    { name: "HKDF", hash: "SHA-256", salt: encoder.encode("syrinx"), info: encoder.encode("request-state/v1") },
+    { name: "HKDF", hash: "SHA-256", salt: encoder.encode("syrinx"), info: encoder.encode(purpose) },
     base,
     { name: "AES-GCM", length: 256 },
     false,

@@ -1,5 +1,6 @@
-import { defineApp, op, prompt, resource, type Context } from "@syrinx/core";
+import { defineApp, op, prompt, resource, view, type Context } from "@syrinx/core";
 import { z } from "zod";
+import { customers } from "./customers.js";
 
 export const Invoice = z.object({
   id: z.string(),
@@ -102,16 +103,44 @@ export const invoices = defineApp({
     }),
   },
 
+  views: {
+    // One composite view: the list and the detail share a selection, and the detail embeds the customers badge.
+    browser: view({
+      title: "Invoices",
+      entry: new URL("./views/InvoiceBrowser.vue", import.meta.url),
+      boundTo: ["list", { op: "get", component: "detail" }],
+      calls: ["list", "get", "send"],
+      embeds: [customers.views.badge],
+      features: { actions: true },
+      examples: [
+        {
+          title: "Two invoices",
+          data: {
+            items: [
+              { id: "inv_2", customer: "Globex", totalCents: 4500, status: "sent" },
+              { id: "inv_1", customer: "Acme Corp", totalCents: 120000, status: "draft" },
+            ],
+          },
+        },
+        {
+          title: "One invoice, detail only",
+          component: "detail",
+          data: { id: "inv_1", customer: "Acme Corp", totalCents: 120000, status: "draft" },
+        },
+      ],
+    }),
+  },
+
   prompts: {
     chase: prompt({
       title: "Chase payment",
       description: "Draft a polite payment reminder for an unpaid invoice.",
       args: z.object({ id: z.string().min(1).describe("Invoice id, such as inv_1.") }),
       permissions: ["invoices:read"],
-      // Suggests unpaid invoice ids as the user types.
+      // Suggests sent (so unpaid and awaited) invoice ids as the user types.
       complete: {
         id: async (value, _context, ctx: Ctx) =>
-          (await ctx.deps.store.list({ status: "draft", limit: 100 }))
+          (await ctx.deps.store.list({ status: "sent", limit: 100 }))
             .map((i) => i.id)
             .filter((id) => id.startsWith(value)),
       },

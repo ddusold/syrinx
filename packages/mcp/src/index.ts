@@ -10,10 +10,22 @@ import {
   type AuthMetadataOptions,
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
-import { buildServer, checkToolNames, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
+import { buildServer, checkMembers, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
 
-export { ASKS_META_KEY, buildServer, ERROR_META_KEY, META_PREFIX } from "./projection.js";
-export type { Caller, Era, ProjectionOptions, Scope, Serving } from "./projection.js";
+export {
+  APPS_EXTENSION,
+  ASKS_META_KEY,
+  buildServer,
+  ERROR_META_KEY,
+  META_PREFIX,
+  SURFACE_META_KEY,
+  VIEW_META_KEY,
+  VIEW_CALL_TOOL,
+  VIEW_MIME_TYPE,
+  viewUri,
+} from "./projection.js";
+export type { Caller, Era, ProjectionOptions, Scope, Serving, ViewShell, ViewShells } from "./projection.js";
+export type { ViewCallResult } from "@syrinx/core";
 export type { AuthMetadataOptions } from "@modelcontextprotocol/server";
 
 export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {
@@ -30,7 +42,8 @@ export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {
   basePath?: string;
   /**
    * Hostnames the Host header may name (DNS rebinding protection). Defaults to localhost only, so a deployed server
-   * must list its public hostnames. Pass false to skip the check, for example behind a proxy that enforces it.
+   * must list its public hostnames; the `SYRINX_ALLOWED_HOSTS` environment variable (comma-separated) adds some
+   * without a code change, such as a tunnel's. Pass false to skip the check, for example behind a proxy that enforces it.
    */
   allowedHosts?: string[] | false;
   /** Hostnames browsers may call from (the Origin header). Requests without Origin pass. Defaults to localhost. */
@@ -41,6 +54,11 @@ export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {
   oauth?: AuthMetadataOptions;
   /** How 2025-era clients are served. Defaults to the SDK's stateless fallback. */
   legacy?: "stateless" | "reject";
+  /**
+   * Gzips JSON responses over 1 KB for clients that accept it. View shells travel inside `resources/read` results,
+   * so this cuts their transfer to about a third. On by default; turn it off when a proxy in front compresses.
+   */
+  compress?: boolean;
 }
 
 export interface McpSurface {
@@ -82,6 +100,56 @@ const methodNotFound = (id: string | number | null, method: string) =>
     },
   );
 
+/** Bodies smaller than this are sent as they are: compressing them saves less than it costs. */
+const COMPRESS_MIN_BYTES = 1024;
+
+/**
+ * Public hostnames from `SYRINX_ALLOWED_HOSTS` (comma-separated), on top of localhost, so a tunnel or preview host can
+ * be allowed without a code change. An explicit `allowedHosts` option wins over it.
+ */
+function hostsFromEnv(): string[] | undefined {
+  const raw = typeof process === "undefined" ? undefined : process.env.SYRINX_ALLOWED_HOSTS;
+  const extra = raw
+    ?.split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+  return extra?.length ? [...localhostAllowedHostnames(), ...extra] : undefined;
+}
+
+/** The JSON-RPC method of a POST, read from a clone so the body stays for the SDK. */
+async function requestMethod(request: Request): Promise<string | undefined> {
+  if (request.method !== "POST") return undefined;
+  try {
+    const body = (await request.clone().json()) as { method?: unknown };
+    return typeof body.method === "string" ? body.method : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Gzips a complete response when the client accepts gzip. JSON responses are one body, so it is buffered and its size
+ * known. Clients that accept SSE too (every Streamable HTTP client must) are answered over SSE, which may stream
+ * notifications mid-call, so it is left alone, except for `resources/read`: one event, never progress, and the one
+ * response that is large (a view shell travels in it). Uses CompressionStream, available on Node, Bun, Deno and edge
+ * runtimes.
+ */
+async function gzipped(request: Request, response: Response, method: string | undefined): Promise<Response> {
+  const accepts = /\bgzip\b/i.test(request.headers.get("accept-encoding") ?? "");
+  const type = response.headers.get("content-type") ?? "";
+  const json =
+    type.startsWith("application/json") || (type.startsWith("text/event-stream") && method === "resources/read");
+  if (!accepts || !json || !response.body || response.headers.has("content-encoding")) return response;
+  const body = await response.arrayBuffer();
+  if (body.byteLength < COMPRESS_MIN_BYTES) return new Response(body, response);
+  const compressed = new Response(new Blob([body]).stream().pipeThrough(new CompressionStream("gzip")));
+  const headers = new Headers(response.headers);
+  headers.set("content-encoding", "gzip");
+  headers.delete("content-length");
+  headers.append("vary", "accept-encoding");
+  return new Response(compressed.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 /**
  * The MCP surface over Streamable HTTP: stateless, one JSON response per request, targeting 2026-07-28 with the
  * SDK's fallback for 2025-era clients. Each request gets a server built for its caller, so lists only show what
@@ -90,9 +158,15 @@ const methodNotFound = (id: string | number | null, method: string) =>
 export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const { registry } = options;
   const basePath = (options.basePath ?? "/mcp").replace(/\/$/, "");
-  checkToolNames(registry, "all");
+  checkMembers(registry, "all");
+  const withViews = [...registry.apps.values()].filter((a) => Object.keys(a.views).length).map((a) => a.name);
+  if (withViews.length && !options.views) {
+    options.logger?.warn(
+      `MCP: apps ${withViews.join(", ")} declare views, but no view shells were given; serving without UI.`,
+    );
+  }
   for (const app of registry.apps.values()) {
-    checkToolNames(registry, { app: app.name });
+    checkMembers(registry, { app: app.name });
     for (const warning of lintApp(app)) {
       options.logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`, { target: warning.target });
     }
@@ -123,7 +197,12 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const scopeOf = (pathname: string): Scope | undefined => {
     if (pathname === basePath) return "all";
     if (!pathname.startsWith(`${basePath}/`)) return undefined;
-    const app = decodeURIComponent(pathname.slice(basePath.length + 1));
+    let app: string;
+    try {
+      app = decodeURIComponent(pathname.slice(basePath.length + 1));
+    } catch {
+      return undefined; // a malformed escape names no app
+    }
     return registry.apps.has(app) ? { app } : undefined;
   };
 
@@ -137,8 +216,10 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
       if (!scope) return jsonRpcError(404, "Not found.");
       const listen = await listenRequestId(request);
       if (listen !== undefined) return methodNotFound(listen, "subscriptions/listen");
+      // Read before the SDK takes the body; only a response that may be compressed needs it.
+      const method = options.compress === false ? undefined : await requestMethod(request);
 
-      const hosts = options.allowedHosts ?? localhostAllowedHostnames();
+      const hosts = options.allowedHosts ?? hostsFromEnv() ?? localhostAllowedHostnames();
       if (hosts !== false) {
         // Fetch-style callers may omit Host; servers build the URL from it, so the URL's host stands in.
         const host = validateHostHeader(request.headers.get("host") ?? new URL(request.url).host, hosts);
@@ -164,7 +245,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
       if (principal) caller.principal = principal;
       if (tenant) caller.tenant = tenant;
 
-      return handlerFor(scope).fetch(request, {
+      const response = await handlerFor(scope).fetch(request, {
         authInfo: {
           token: "",
           clientId: principal?.id ?? "anonymous",
@@ -172,6 +253,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
           extra: { [CALLER]: caller },
         },
       });
+      return options.compress === false ? response : gzipped(request, response, method);
     },
     async close() {
       await Promise.all([...handlers.values()].map((h) => h.close()));

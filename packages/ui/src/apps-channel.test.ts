@@ -1,0 +1,376 @@
+// @vitest-environment happy-dom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  APPS_PROTOCOL_VERSION,
+  applyHostStyles,
+  createAppsChannel,
+  findViewportHeightRules,
+  type AppsChannel,
+} from "./apps-channel.js";
+import { createMcpBridge } from "./mcp.js";
+
+interface Sent {
+  jsonrpc: string;
+  id?: number;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
+  error?: { code: number; message: string };
+}
+
+/** A host window: records what the view posts, and answers requests from a table, as AppBridge would. */
+function fakeHost(answers: Record<string, (params: Record<string, unknown>) => unknown> = {}) {
+  const sent: Sent[] = [];
+  const host = {
+    postMessage(message: Sent) {
+      sent.push(message);
+      const answer = message.method !== undefined && message.id !== undefined ? answers[message.method] : undefined;
+      if (answer)
+        queueMicrotask(() => {
+          deliver({ jsonrpc: "2.0", id: message.id, result: answer(message.params ?? {}) });
+        });
+    },
+  } as unknown as Window;
+  const deliver = (data: unknown, source: unknown = host) => {
+    window.dispatchEvent(new MessageEvent("message", { data, source: source as Window }));
+  };
+  return { host, sent, deliver };
+}
+
+const channels: AppsChannel[] = [];
+const open = (host: Window, timeoutMs?: number) => {
+  const channel = createAppsChannel({ host, ...(timeoutMs ? { timeoutMs } : {}) });
+  channels.push(channel);
+  return channel;
+};
+afterEach(() => {
+  channels.splice(0).forEach((c) => {
+    c.close();
+  });
+});
+
+describe("MCP Apps channel", () => {
+  it("handshakes with ui/initialize and the protocol version, then sends initialized", async () => {
+    const { host, sent } = fakeHost({ "ui/initialize": () => ({ hostContext: { theme: "dark" } }) });
+    await expect(open(host).connect()).resolves.toEqual({ theme: "dark" });
+    expect(sent[0]).toMatchObject({
+      jsonrpc: "2.0",
+      method: "ui/initialize",
+      params: { protocolVersion: APPS_PROTOCOL_VERSION, appCapabilities: {}, appInfo: { name: "syrinx-view" } },
+    });
+    expect(sent[1]).toEqual({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
+  });
+
+  it("matches responses to requests and turns JSON-RPC errors into rejections", async () => {
+    const { host, sent, deliver } = fakeHost();
+    const channel = open(host);
+    const first = channel.request("tools/call", { name: "a" });
+    const second = channel.request("tools/call", { name: "b" });
+    const [a, b] = sent;
+    deliver({ jsonrpc: "2.0", id: b?.id, error: { code: -32602, message: "bad" } });
+    deliver({ jsonrpc: "2.0", id: a?.id, result: { ok: true } });
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).rejects.toMatchObject({ name: "AppsProtocolError", code: -32602, message: "bad" });
+  });
+
+  it("sends plain JSON, so proxies such as Vue refs can cross postMessage", () => {
+    const { host, sent } = fakeHost();
+    const reactive = new Proxy({ id: "inv_1" }, {});
+    // Never answered; close() in afterEach rejects it, so swallow that here.
+    open(host)
+      .request("tools/call", { name: "send", arguments: reactive })
+      .catch(() => undefined);
+    const sentArgs = sent[0]?.params?.arguments;
+    expect(sentArgs).toEqual({ id: "inv_1" });
+    expect(sentArgs).not.toBe(reactive);
+    expect(() => structuredClone(sent[0])).not.toThrow();
+  });
+
+  it("ignores messages from anything but the host window", async () => {
+    const { host, sent, deliver } = fakeHost();
+    const channel = open(host, 50);
+    const handler = vi.fn();
+    channel.on("ui/notifications/tool-result", handler);
+    const pending = channel.request("ping");
+    deliver({ jsonrpc: "2.0", id: sent[0]?.id, result: {} }, {});
+    deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: {} }, window);
+    await expect(pending).rejects.toThrow(/did not answer ping/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("answers teardown and ping, refuses other host requests, and dispatches notifications", () => {
+    const { host, sent, deliver } = fakeHost();
+    const channel = open(host);
+    const handler = vi.fn();
+    channel.on("ui/notifications/host-context-changed", handler);
+    deliver({ jsonrpc: "2.0", id: 7, method: "ui/resource-teardown", params: {} });
+    deliver({ jsonrpc: "2.0", id: 8, method: "ui/whatever", params: {} });
+    deliver({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: { theme: "light" } });
+    expect(sent).toEqual([
+      { jsonrpc: "2.0", id: 7, result: {} },
+      { jsonrpc: "2.0", id: 8, error: { code: -32601, message: "Method not found: ui/whatever" } },
+    ]);
+    expect(handler).toHaveBeenCalledWith({ theme: "light" });
+  });
+
+  it("applies host CSS variables and fonts once", () => {
+    applyHostStyles({
+      styles: { variables: { "--color-text-primary": "#123456" }, css: { fonts: "@font-face{font-family:X}" } },
+    });
+    applyHostStyles({ styles: { css: { fonts: "@font-face{font-family:Y}" } } });
+    expect(document.documentElement.style.getPropertyValue("--color-text-primary")).toBe("#123456");
+    expect(document.querySelectorAll("#__mcp-host-fonts")).toHaveLength(1);
+  });
+
+  it("applies only what the view's hostStyles mode allows", () => {
+    const styles = { variables: { "--color-bg": "#010203" }, css: { fonts: "@font-face{font-family:Z}" } };
+    const root = document.createElement("div");
+    document.getElementById("__mcp-host-fonts")?.remove();
+
+    applyHostStyles({ styles }, root, "ignore");
+    expect(root.style.getPropertyValue("--color-bg")).toBe("");
+    expect(document.getElementById("__mcp-host-fonts")).toBeNull();
+
+    applyHostStyles({ styles }, root, "fonts");
+    expect(root.style.getPropertyValue("--color-bg")).toBe("");
+    expect(document.getElementById("__mcp-host-fonts")?.textContent).toContain("font-family:Z");
+
+    applyHostStyles({ styles }, root, "apply");
+    expect(root.style.getPropertyValue("--color-bg")).toBe("#010203");
+  });
+});
+
+describe("MCP bridge", () => {
+  it("calls tools with the app surface mark and the retry channel, and opens links", async () => {
+    const { host, sent } = fakeHost({
+      "ui/initialize": () => ({ hostContext: { theme: "dark", locale: "de-DE", styles: {} } }),
+      "tools/call": () => ({ structuredContent: { id: "inv_1" } }),
+      "ui/open-link": () => ({}),
+    });
+    const bridge = createMcpBridge(open(host));
+    await bridge.connect();
+    expect(bridge.host()).toEqual({ theme: "dark", locale: "de-DE" });
+
+    const resume = { inputResponses: { c: { action: "accept" as const } }, requestState: "s" };
+    await expect(bridge.call("send", { id: "inv_1" }, { app: "invoices", operation: "send", resume })).resolves.toEqual(
+      {
+        data: { id: "inv_1" },
+      },
+    );
+    await bridge.openLink("https://example.com");
+    expect(sent.find((m) => m.method === "tools/call")?.params).toEqual({
+      name: "send",
+      arguments: { id: "inv_1" },
+      _meta: { "io.github.ddusold.syrinx/surface": "app" },
+      ...resume,
+    });
+    expect(sent.find((m) => m.method === "ui/open-link")?.params).toEqual({ url: "https://example.com" });
+  });
+
+  it("hands the host a file as an embedded resource, and a chat message as the user's", async () => {
+    const { host, sent } = fakeHost({
+      "ui/initialize": () => ({ hostContext: {} }),
+      "ui/download-file": () => ({}),
+      "ui/message": () => ({}),
+    });
+    const bridge = createMcpBridge(open(host));
+    await bridge.connect();
+    await bridge.downloadFile?.({ name: "contacts.csv", mimeType: "text/csv", text: "a,b" });
+    await bridge.downloadFile?.({ name: "logo.png", mimeType: "image/png", base64: "AAEC" });
+    await bridge.sendMessage?.("Show Josh Davis");
+    const params = (method: string) => sent.filter((m) => m.method === method).map((m) => m.params);
+    expect(params("ui/download-file")).toEqual([
+      {
+        contents: [{ type: "resource", resource: { uri: "file:///contacts.csv", mimeType: "text/csv", text: "a,b" } }],
+      },
+      { contents: [{ type: "resource", resource: { uri: "file:///logo.png", mimeType: "image/png", blob: "AAEC" } }] },
+    ]);
+    expect(params("ui/message")).toEqual([{ role: "user", content: [{ type: "text", text: "Show Josh Davis" }] }]);
+  });
+
+  it("asks the host for another display mode and reports the mode it is in, and passes on the modes on offer", async () => {
+    const { host, sent } = fakeHost({
+      "ui/initialize": () => ({
+        hostContext: { displayMode: "inline", availableDisplayModes: ["inline", "fullscreen"] },
+      }),
+      "ui/request-display-mode": (params) => ({ mode: (params as { mode: string }).mode }),
+    });
+    const bridge = createMcpBridge(open(host));
+    await bridge.connect();
+    expect(bridge.host().availableDisplayModes).toEqual(["inline", "fullscreen"]);
+    await expect(bridge.requestDisplayMode?.("fullscreen")).resolves.toBe("fullscreen");
+    expect(sent.filter((m) => m.method === "ui/request-display-mode").map((m) => m.params)).toEqual([
+      { mode: "fullscreen" },
+    ]);
+  });
+
+  it("tells the view when the host cannot change display modes", async () => {
+    const { host } = fakeHost({ "ui/initialize": () => ({ hostContext: {} }) });
+    const bridge = createMcpBridge(open(host, 50));
+    await bridge.connect();
+    await expect(bridge.requestDisplayMode?.("fullscreen")).rejects.toMatchObject({ kind: "host" });
+  });
+
+  it("tells the view when the host cannot save a file or post a message, or declines to", async () => {
+    const { host } = fakeHost({
+      "ui/initialize": () => ({ hostContext: {} }),
+      "ui/download-file": () => ({ isError: true }),
+    });
+    // ui/message is not answered: a real host without it replies "method not found"; here the request times out sooner.
+    const bridge = createMcpBridge(open(host, 50));
+    await bridge.connect();
+    await expect(bridge.downloadFile?.({ name: "a.csv", mimeType: "text/csv", text: "x" })).rejects.toMatchObject({
+      kind: "host",
+      message: expect.stringContaining("declined") as string,
+    });
+    await expect(bridge.sendMessage?.("hi")).rejects.toMatchObject({ kind: "host" });
+  });
+
+  it("leaves the host's variables alone when the view ignores host styles", async () => {
+    const { host } = fakeHost({
+      "ui/initialize": () => ({
+        hostContext: { theme: "dark", styles: { variables: { "--ignored-by-view": "red" } } },
+      }),
+    });
+    const bridge = createMcpBridge(open(host), { hostStyles: "ignore" });
+    await bridge.connect();
+    expect(document.documentElement.style.getPropertyValue("--ignored-by-view")).toBe("");
+    expect(bridge.host().theme).toBe("dark");
+  });
+
+  it("reports the arguments of the call that opened the view", async () => {
+    const { host, deliver } = fakeHost({ "ui/initialize": () => ({ hostContext: {} }) });
+    const bridge = createMcpBridge(open(host));
+    await bridge.connect();
+    expect(bridge.toolInput?.()).toBeUndefined();
+    deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: { personId: "p1" } } });
+    expect(bridge.toolInput?.()).toEqual({ personId: "p1" });
+  });
+
+  it("calls through the view channel: questions come back as data, answers go back as arguments", async () => {
+    const { host, sent } = fakeHost({
+      "tools/call": (params) => {
+        const args = params.arguments as { resume?: unknown };
+        const envelope = args.resume
+          ? {
+              resultType: "complete",
+              data: { voided: true },
+              view: { view: "invoices/browser", op: "void", schemaVersion: "v" },
+            }
+          : {
+              resultType: "input_required",
+              inputRequests: { c: { method: "elicitation/create", params: { message: "Void?", requestedSchema: {} } } },
+              requestState: "sealed",
+            };
+        return { content: [{ type: "text", text: JSON.stringify(envelope) }], structuredContent: envelope };
+      },
+    });
+    const bridge = createMcpBridge(open(host));
+    const target = { app: "invoices", operation: "void", viewCall: { tool: "syrinx_view_call", token: "tok" } };
+    await expect(bridge.call("void", { id: "inv_1" }, target)).resolves.toEqual({
+      input: { requests: { c: { message: "Void?", fields: {} } }, requestState: "sealed" },
+    });
+    const resume = { inputResponses: { c: { action: "accept" as const } }, requestState: "sealed" };
+    await expect(bridge.call("void", { id: "inv_1" }, { ...target, resume })).resolves.toEqual({
+      data: { voided: true },
+      view: { view: "invoices/browser", op: "void", schemaVersion: "v" },
+    });
+    const calls = sent.filter((m) => m.method === "tools/call").map((m) => m.params);
+    expect(calls).toEqual([
+      {
+        name: "syrinx_view_call",
+        arguments: { app: "invoices", operation: "void", input: { id: "inv_1" }, token: "tok" },
+        _meta: { "io.github.ddusold.syrinx/surface": "app" },
+      },
+      {
+        name: "syrinx_view_call",
+        arguments: { app: "invoices", operation: "void", input: { id: "inv_1" }, token: "tok", resume },
+        _meta: { "io.github.ddusold.syrinx/surface": "app" },
+      },
+    ]);
+  });
+
+  it("reads the channel's JSON text when a host drops structuredContent", async () => {
+    const envelope = { resultType: "error", error: { kind: "forbidden", message: "no" } };
+    const { host } = fakeHost({
+      "tools/call": () => ({ isError: true, content: [{ type: "text", text: JSON.stringify(envelope) }] }),
+    });
+    const bridge = createMcpBridge(open(host));
+    await expect(
+      bridge.call(
+        "send",
+        {},
+        { app: "invoices", operation: "send", viewCall: { tool: "syrinx_view_call", token: "tok" } },
+      ),
+    ).resolves.toMatchObject({ error: { kind: "forbidden", message: "no" } });
+  });
+
+  it("falls back to calling the operation directly when the server refuses the channel", async () => {
+    const { host, sent } = fakeHost({
+      "tools/call": (params) =>
+        params.name === "syrinx_view_call"
+          ? { isError: true, structuredContent: { resultType: "error", error: { kind: "unavailable", message: "no" } } }
+          : { structuredContent: { id: "inv_1" } },
+    });
+    const bridge = createMcpBridge(open(host));
+    const target = { app: "invoices", operation: "send", viewCall: { tool: "syrinx_view_call", token: "tok" } };
+    await expect(bridge.call("send", { id: "inv_1" }, target)).resolves.toEqual({ data: { id: "inv_1" } });
+    await bridge.call("send", { id: "inv_1" }, target);
+    expect(sent.filter((m) => m.method === "tools/call").map((m) => m.params?.name)).toEqual([
+      "syrinx_view_call",
+      "send",
+      "send", // the channel is not tried again
+    ]);
+  });
+
+  it("falls back when the host refuses to relay the channel tool", async () => {
+    const { host, sent } = fakeHost({
+      "tools/call": (params) =>
+        params.name === "syrinx_view_call"
+          ? { isError: true, content: [{ type: "text", text: "Tool not allowed" }] }
+          : { structuredContent: { id: "inv_1" } },
+    });
+    const bridge = createMcpBridge(open(host));
+    const target = { app: "invoices", operation: "send", viewCall: { tool: "syrinx_view_call", token: "tok" } };
+    await expect(bridge.call("send", { id: "inv_1" }, target)).resolves.toEqual({ data: { id: "inv_1" } });
+    expect(sent.filter((m) => m.method === "tools/call").map((m) => m.params?.name)).toEqual([
+      "syrinx_view_call",
+      "send",
+    ]);
+  });
+
+  it("reports host failures as view errors", async () => {
+    const { host, deliver, sent } = fakeHost();
+    const bridge = createMcpBridge(open(host));
+    const pending = bridge.call("send", {}, { app: "invoices", operation: "send" });
+    deliver({ jsonrpc: "2.0", id: sent[0]?.id, error: { code: -32603, message: "host exploded" } });
+    await expect(pending).resolves.toMatchObject({ error: { kind: "host", message: "host exploded" } });
+  });
+});
+
+describe("viewport height rules", () => {
+  const sheet = (...rules: [string, string][]) => ({
+    cssRules: rules.map(([selectorText, body]) => ({ selectorText, cssText: `${selectorText} { ${body} }` })),
+  });
+
+  it("finds height and min-height in viewport units, and nothing else", () => {
+    const found = findViewportHeightRules([
+      sheet(
+        [".profile", "min-height: 100vh; background: red;"],
+        [".tall", "height: 80dvh"],
+        [".small", "min-height: 36px"],
+      ),
+      sheet([".fit", "max-height: 100vh"], [".lines", "line-height: 1.5"], [".svh", "margin: 0; height:100svh;"]),
+    ]);
+    expect(found).toEqual([".profile", ".tall", ".svh"]);
+  });
+
+  it("skips sheets it cannot read", () => {
+    const blocked = {
+      get cssRules(): never {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    };
+    expect(findViewportHeightRules([blocked, sheet([".a", "height: 100vh"])])).toEqual([".a"]);
+  });
+});

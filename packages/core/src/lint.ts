@@ -1,4 +1,5 @@
 import type { App } from "./app.js";
+import { bindingOp } from "./view.js";
 import { toJsonSchema } from "./schema.js";
 
 export interface LintWarning {
@@ -51,6 +52,24 @@ export function lintApp(app: App): LintWarning[] {
     const target = `${app.name}.${name}`;
     describe(target, operation.mcp?.description ?? operation.description, true);
     fields(target, toJsonSchema(operation.input, "input"));
+  }
+  // A view a model can open is chosen by its description: the page's purpose is what "change my brand settings" is matched to.
+  for (const [name, v] of Object.entries(app.views)) {
+    const opensForModel = v.boundTo.some((binding) => {
+      const operation = app.operations[bindingOp(binding)];
+      return operation?.visibility.includes("model");
+    });
+    if (!opensForModel) continue;
+    const target = `${app.name}.views.${name}`;
+    if (!v.description?.trim()) {
+      warnings.push({
+        target,
+        message:
+          "has no description; say what the page does and when to open it, so a model can match a request to it.",
+      });
+    } else {
+      describe(target, v.description, false);
+    }
   }
   for (const [name, p] of Object.entries(app.prompts)) {
     const target = `${app.name}.${name}`;

@@ -2,6 +2,7 @@ import type { ContentBlock, PromptContent } from "./content.js";
 import { surfaces, type Context, type Principal, type Surface } from "./context.js";
 import { toJsonSchema, type Schema, type SchemaSide } from "./schema.js";
 import type { StandardSchemaV1 } from "./standard-schema.js";
+import { bindingComponent, bindingOp, viewId, type View, type ViewDefinition } from "./view.js";
 
 export interface OperationAnnotations {
   /** No side effects. Allows GET over REST and maps to readOnlyHint over MCP. */
@@ -165,6 +166,7 @@ export interface AppDefinition<
   Ops extends Record<string, Operation>,
   Res extends Record<string, Resource> = Record<string, never>,
   Prompts extends Record<string, Prompt> = Record<string, never>,
+  Views extends Record<string, ViewDefinition> = Record<string, never>,
 > {
   name: string;
   version: string;
@@ -172,12 +174,19 @@ export interface AppDefinition<
   operations: Ops;
   resources?: Res;
   prompts?: Prompts;
+  views?: Views;
 }
+
+/** Views as `defineApp` returns them: stamped with their app and name, defaults filled in. */
+export type StampedViews<Views> = {
+  readonly [K in keyof Views]: Views[K] extends ViewDefinition<infer B, infer C> ? View<B, C> : never;
+};
 
 export interface App<
   Ops extends Record<string, Operation> = Record<string, Operation>,
   Res extends Record<string, Resource> = Record<string, Resource>,
   Prompts extends Record<string, Prompt> = Record<string, Prompt>,
+  Views extends Record<string, View> = Record<string, View>,
 > {
   readonly kind: "app";
   readonly name: string;
@@ -186,6 +195,7 @@ export interface App<
   readonly operations: Ops;
   readonly resources: Res;
   readonly prompts: Prompts;
+  readonly views: Views;
 }
 
 const APP_NAME = /^[a-z][a-z0-9-]{0,63}$/;
@@ -239,7 +249,8 @@ export function defineApp<
   Ops extends Record<string, Operation>,
   Res extends Record<string, Resource> = Record<string, never>,
   Prompts extends Record<string, Prompt> = Record<string, never>,
->(def: AppDefinition<Ops, Res, Prompts>): App<Ops, Res, Prompts> {
+  Views extends Record<string, ViewDefinition> = Record<string, never>,
+>(def: AppDefinition<Ops, Res, Prompts, Views>): App<Ops, Res, Prompts, StampedViews<Views>> {
   if (!APP_NAME.test(def.name)) {
     throw new TypeError(`App name "${def.name}" must be lowercase kebab-case, starting with a letter.`);
   }
@@ -296,5 +307,85 @@ export function defineApp<
     operations: Object.freeze({ ...def.operations }),
     resources: Object.freeze({ ...resources }),
     prompts: Object.freeze({ ...prompts }),
+    views: stampViews(def.name, def.operations, def.views ?? {}) as StampedViews<Views>,
   });
+}
+
+const isStamped = (v: ViewDefinition | View): v is View => "kind" in v;
+
+/**
+ * Checks views against the app's operations and gives each its app and name. Embeds may name views of apps defined
+ * earlier (already stamped) or, by the same object, views declared in this app.
+ */
+function stampViews(
+  appName: string,
+  operations: Record<string, Operation>,
+  defs: Record<string, ViewDefinition>,
+): Record<string, View> {
+  const names = new Map<ViewDefinition, string>();
+  const boundBy = new Map<string, string>();
+  for (const [name, def] of Object.entries(defs)) {
+    const id = `View "${appName}.${name}"`;
+    if (!MEMBER_NAME.test(name)) throw new TypeError(`${id} must be camelCase, starting with a lowercase letter.`);
+    if (!String(def.entry)) throw new TypeError(`${id} needs an entry: new URL("./views/…", import.meta.url).`);
+    for (const binding of def.boundTo ?? []) {
+      const op = bindingOp(binding);
+      if (!Object.hasOwn(operations, op)) throw new TypeError(`${id} is bound to unknown operation "${op}".`);
+      if (bindingComponent(binding) === "") throw new TypeError(`${id} binds "${op}" to an empty component name.`);
+      const other = boundBy.get(op);
+      if (other) throw new TypeError(`Operation "${appName}.${op}" is bound to both views "${other}" and "${name}".`);
+      boundBy.set(op, name);
+    }
+    for (const op of def.calls ?? []) {
+      const operation = operations[op];
+      if (!operation) throw new TypeError(`${id} calls unknown operation "${op}".`);
+      if (!operation.visibility.includes("app")) {
+        throw new TypeError(`${id} calls "${op}", which is not visible on the "app" surface.`);
+      }
+    }
+    names.set(def, name);
+  }
+
+  const stamped: Record<string, View & { embeds: View[] }> = {};
+  for (const [name, def] of Object.entries(defs)) {
+    stamped[name] = {
+      ...def,
+      kind: "view",
+      app: appName,
+      name,
+      boundTo: Object.freeze([...(def.boundTo ?? [])]),
+      calls: Object.freeze([...(def.calls ?? [])]),
+      embeds: [],
+      navigatesTo: () => (typeof def.navigatesTo === "function" ? def.navigatesTo() : (def.navigatesTo ?? [])),
+      features: Object.freeze({ ...def.features }),
+    };
+  }
+  for (const [name, def] of Object.entries(defs)) {
+    const target = stamped[name];
+    for (const embed of def.embeds ?? []) {
+      const local = names.get(embed);
+      const resolved = isStamped(embed) ? embed : local !== undefined ? stamped[local] : undefined;
+      if (!resolved) {
+        throw new TypeError(`View "${appName}.${name}" embeds a view that belongs to no app; define its app first.`);
+      }
+      target?.embeds.push(resolved);
+    }
+  }
+
+  // Embeds within one app could loop back; across apps they cannot, since an app only names apps defined before it.
+  const visiting = new Set<string>();
+  const done = new Set<string>();
+  const visit = (v: View, path: string[]) => {
+    const key = viewId(v);
+    if (done.has(key)) return;
+    if (visiting.has(key)) throw new TypeError(`Views embed each other in a cycle: ${[...path, key].join(" -> ")}.`);
+    visiting.add(key);
+    for (const child of v.embeds) visit(child, [...path, key]);
+    visiting.delete(key);
+    done.add(key);
+  };
+  for (const v of Object.values(stamped)) visit(v, []);
+
+  for (const v of Object.values(stamped)) Object.freeze(v.embeds);
+  return Object.freeze(Object.fromEntries(Object.entries(stamped).map(([k, v]) => [k, Object.freeze(v)])));
 }

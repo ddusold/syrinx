@@ -9,7 +9,7 @@
   "scripts": {
     "prepare": "simple-git-hooks",
     "build": "pnpm -r build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && vue-tsc -p tsconfig.vue.json --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -18,16 +18,21 @@
     "smoke": "node scripts/smoke.mjs",
     "conformance": "pnpm -s --filter @syrinx/example-conformance conformance",
     "changeset": "changeset",
-    "release": "pnpm build && changeset publish"
+    "release": "pnpm build && changeset publish",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
     "@stoplight/spectral-cli": "^6.17.0",
     "@syrinx/core": "workspace:*",
     "@syrinx/mcp": "workspace:*",
     "@syrinx/rest": "workspace:*",
     "@syrinx/testing": "workspace:*",
+    "@syrinx/ui": "workspace:*",
+    "@syrinx/ui-vue": "workspace:*",
+    "@syrinx/vite": "workspace:*",
     "@types/node": "^22.19.0",
     "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
@@ -39,6 +44,7 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.2",
     "vitest": "^3.2.7",
+    "vue-tsc": "^3.3.13",
     "zod": "^4.1.0"
   },
   "simple-git-hooks": {

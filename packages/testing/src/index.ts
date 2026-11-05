@@ -174,9 +174,11 @@ export interface McpClientOptions {
   /** Anything fetch-shaped that serves the MCP surface, such as a Hono app's `fetch`. */
   fetch: (request: Request) => Response | Promise<Response>;
   baseUrl?: string;
-  /** Where the MCP endpoints live. Each app is reached at `{basePath}/{app}`, so tool names match operation names. */
+  /** Where the MCP endpoints live. Each app is reached at `{basePath}/{app}`, so names carry no app prefix. */
   basePath?: string;
   headers?: Record<string, string>;
+  /** The registry being served, so operations and prompts renamed with `mcp.name` are called by their MCP names. */
+  registry?: Pick<Registry, "get" | "getPrompt">;
 }
 
 interface ErrorDetails {
@@ -225,6 +227,7 @@ export function createMcpClient({
   baseUrl = "http://localhost",
   basePath = "/mcp",
   headers = {},
+  registry,
 }: McpClientOptions): SyrinxClient & { close(): Promise<void> } {
   const clients = new Map<string, Promise<Client>>();
   const connect = (app: string) => {
@@ -268,7 +271,8 @@ export function createMcpClient({
     surface: "mcp",
     async invoke(app, operation, input, options = {}) {
       const client = await connect(app);
-      const params: Record<string, unknown> = { name: operation, arguments: input ?? {} };
+      const name = registry?.get(app, operation)?.mcp?.name ?? operation;
+      const params: Record<string, unknown> = { name, arguments: input ?? {} };
       if (options.resume) {
         params.requestState = options.resume.requestState;
         params.inputResponses = options.resume.inputResponses;
@@ -307,7 +311,8 @@ export function createMcpClient({
     },
     async render(app, prompt, args = {}, options = {}) {
       try {
-        const params: Record<string, unknown> = { name: prompt, arguments: args };
+        const name = registry?.getPrompt(app, prompt)?.mcp?.name ?? prompt;
+        const params: Record<string, unknown> = { name, arguments: args };
         if (options.resume) {
           params.requestState = options.resume.requestState;
           params.inputResponses = options.resume.inputResponses;

@@ -1,7 +1,7 @@
 import { lintApp, type Principal, type Tenant } from "@syrinx/core";
 import type { Transport } from "@modelcontextprotocol/server";
 import { serveStdio, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
-import { buildServer, checkToolNames, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
+import { buildServer, checkMembers, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
 
 export interface StdioOptions<Deps = unknown> extends ProjectionOptions<Deps> {
   /** Serve one app with unprefixed names instead of every app. */
@@ -22,7 +22,7 @@ export interface StdioOptions<Deps = unknown> extends ProjectionOptions<Deps> {
 export function serveRegistryStdio<Deps>(options: StdioOptions<Deps>): StdioServerHandle {
   const scope: Scope = options.app ? { app: options.app } : "all";
   if (options.app && !options.registry.apps.has(options.app)) throw new TypeError(`Unknown app "${options.app}".`);
-  checkToolNames(options.registry, scope);
+  checkMembers(options.registry, scope);
   for (const app of options.registry.apps.values()) {
     for (const warning of lintApp(app)) {
       options.logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`);

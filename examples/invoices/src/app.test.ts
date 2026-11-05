@@ -20,7 +20,7 @@ function setup(principal: "reader" | "writer" | "anonymous") {
   clients = {
     inProcess: createInProcessClient(host.registry, { deps: host.deps, ...(known ? { principal: known } : {}) }),
     rest: createRestClient({ fetch: host.app.fetch, headers }),
-    mcp: createMcpClient({ fetch: host.app.fetch, headers }),
+    mcp: createMcpClient({ fetch: host.app.fetch, headers, registry: host.registry }),
   };
 }
 
@@ -71,7 +71,7 @@ describe("prompts", () => {
 });
 
 describe("completion", () => {
-  it("suggests draft invoice ids for the chase prompt", async () => {
+  it("suggests sent invoice ids for the chase prompt", async () => {
     setup("reader");
     const host = createInvoicesHost();
     const res = await host.app.request("/api/invoices/complete", {
@@ -79,7 +79,7 @@ describe("completion", () => {
       headers: { authorization: "Bearer reader", "content-type": "application/json" },
       body: JSON.stringify({ prompt: "chase", argument: "id", value: "inv" }),
     });
-    expect(await res.json()).toMatchObject({ data: { values: ["inv_1"], total: 1, hasMore: false } });
+    expect(await res.json()).toMatchObject({ data: { values: ["inv_2"], total: 1, hasMore: false } });
   });
 });
 

@@ -215,6 +215,29 @@ describe("context", () => {
   });
 });
 
+describe("view tokens", () => {
+  const keyed = createRegistry([invoices], { requestStateKey: "view-token-test-request-state-key-32b" });
+  const alice = { id: "alice", scopes: [] };
+
+  it("names the view they were minted for, for the caller they were minted for only", async () => {
+    const token = await keyed.mintViewToken("invoices/browser", { principal: alice });
+    expect(token).toBeTypeOf("string");
+    await expect(keyed.openViewToken(token ?? "", { principal: alice })).resolves.toBe("invoices/browser");
+    await expect(keyed.openViewToken(token ?? "", { principal: { id: "bob", scopes: [] } })).rejects.toMatchObject({
+      kind: "validation",
+    });
+    await expect(keyed.openViewToken(token ?? "", { principal: alice, tenant: { id: "other" } })).rejects.toMatchObject(
+      { kind: "validation" },
+    );
+  });
+
+  it("are not request state, and are not minted without a requestStateKey", async () => {
+    const token = await keyed.mintViewToken("invoices/browser");
+    await expect(keyed.checkRequestState(token ?? "")).rejects.toMatchObject({ kind: "validation" });
+    await expect(registry.mintViewToken("invoices/browser")).resolves.toBeUndefined();
+  });
+});
+
 describe("resources", () => {
   it("reads a resource with its template parameters", async () => {
     await expect(registry.read("invoices", "invoice", { id: "inv_1" })).resolves.toEqual({

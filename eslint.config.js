@@ -6,7 +6,15 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   // standard-schema.ts is vendored verbatim from the spec.
-  { ignores: ["**/dist/", "**/coverage/", "packages/core/src/standard-schema.ts"] },
+  {
+    ignores: [
+      "**/dist/",
+      "**/coverage/",
+      "test-results/",
+      "playwright-report/",
+      "packages/core/src/standard-schema.ts",
+    ],
+  },
   js.configs.recommended,
   tseslint.configs.strictTypeChecked,
   tseslint.configs.stylisticTypeChecked,
