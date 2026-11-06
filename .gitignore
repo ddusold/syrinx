@@ -6,3 +6,4 @@ coverage/
 examples/*/openapi.json
 test-results/
 playwright-report/
+.vitest-stores.json

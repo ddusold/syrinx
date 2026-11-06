@@ -170,7 +170,7 @@ function complete(data: JsonSchema): JsonSchema {
   };
 }
 
-function appPaths(app: App, components: Record<string, JsonSchema>) {
+function appPaths(app: App, components: Record<string, JsonSchema>, idempotent: boolean) {
   const paths: Record<string, Record<string, unknown>> = {};
   const tags = [app.name];
 
@@ -190,17 +190,18 @@ function appPaths(app: App, components: Record<string, JsonSchema>) {
       default: problemResponse,
     };
     const write = !operation.annotations.readOnly;
-    const idempotency = write
-      ? [
-          {
-            name: "Idempotency-Key",
-            in: "header",
-            required: false,
-            description: "Repeating a key replays the first outcome instead of running the operation again.",
-            schema: { type: "string" },
-          },
-        ]
-      : [];
+    const idempotency =
+      write && idempotent
+        ? [
+            {
+              name: "Idempotency-Key",
+              in: "header",
+              required: false,
+              description: "Repeating a key replays the first outcome instead of running the operation again.",
+              schema: { type: "string" },
+            },
+          ]
+        : [];
     const path = `/api/${app.name}/ops/${name}`;
 
     paths[path] = {
@@ -383,7 +384,10 @@ export function createOpenApiDocument(
 ): OpenApiDocument {
   const apps = [...registry.apps.values()].filter((a) => !options.apps || options.apps.includes(a.name));
   const components: Record<string, JsonSchema> = { ...sharedSchemas };
-  const paths = Object.assign({}, ...apps.map((app) => appPaths(app, components))) as Record<string, unknown>;
+  const paths = Object.assign({}, ...apps.map((app) => appPaths(app, components, registry.idempotent))) as Record<
+    string,
+    unknown
+  >;
   const single = apps.length === 1 ? apps[0] : undefined;
 
   return {

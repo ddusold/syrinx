@@ -20,7 +20,8 @@
     "conformance": "pnpm -s --filter @syrinx/example-conformance conformance",
     "changeset": "changeset",
     "release": "pnpm build && changeset publish",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:stores": "vitest run packages/core/src/idempotency.test.ts packages/redis packages/postgres --reporter=default --reporter=json --outputFile=.vitest-stores.json && node scripts/check-no-skips.mjs .vitest-stores.json"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
@@ -29,6 +30,8 @@
     "@stoplight/spectral-cli": "^6.17.0",
     "@syrinx/core": "workspace:*",
     "@syrinx/mcp": "workspace:*",
+    "@syrinx/postgres": "workspace:*",
+    "@syrinx/redis": "workspace:*",
     "@syrinx/rest": "workspace:*",
     "@syrinx/testing": "workspace:*",
     "@syrinx/ui": "workspace:*",

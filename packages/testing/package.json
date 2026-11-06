@@ -9,17 +9,32 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./stores": {
+      "types": "./dist/stores.d.ts",
+      "import": "./dist/stores.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean"
+    "build": "tsup src/index.ts src/stores.ts --format esm --dts --clean --external vitest"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.3.1",
     "@syrinx/core": "workspace:^",
     "@syrinx/mcp": "workspace:^"
+  },
+  "peerDependencies": {
+    "vitest": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "vitest": "^3.2.7"
   }
 }

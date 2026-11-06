@@ -26,6 +26,8 @@ Declare an app once (typed operations, resources and views) and Syrinx serves it
 | `@syrinx/ui-vue`              | Vue binding: `toView`, `useView`, `useAppView`, `ViewContext`, `Embed`, `ViewPart`                  | Phase 3    |
 | `@syrinx/nest`                | NestJS module: REST, MCP and built views beside Nest's routes; operations reach Nest providers      | Phase 3    |
 | `@syrinx/vite`                | `buildViews`: one self-contained bundle per view, `manifest.json`, gallery page                     | Phase 3    |
+| `@syrinx/redis`               | Idempotency store on your node-redis or ioredis client                                              | Phase 4    |
+| `@syrinx/postgres`            | Idempotency store on your node-postgres or postgres.js client, with `migrate` and `prune`           | Phase 4    |
 | `@syrinx/host`, `@syrinx/cli` | Host, CLI                                                                                           | Phases 4–5 |
 
 ## Example
@@ -68,6 +70,18 @@ The MCP surface accepts localhost Host and Origin headers only by default; set `
 
 Operations that confirm or ask seal their state with `requestStateKey`, which defaults to `SYRINX_REQUEST_STATE_KEY` (at least 32 bytes; several keys, comma-separated and newest first, rotate without breaking pending questions). Hosts built on `resolveRequestStateKey`, such as `@syrinx/nest`, refuse to start without one under `NODE_ENV=production` and use a development key otherwise.
 
+Writes sent with an `Idempotency-Key` replay their first outcome. The default store keeps keys in memory, so it only deduplicates within one process (the registry warns about that under `NODE_ENV=production`). With more than one instance, pass a shared store; pass `idempotency: false` to stop deduplicating and drop the header from OpenAPI:
+
+```ts
+import { createRedisIdempotencyStore } from "@syrinx/redis";
+import { createClient } from "redis"; // or ioredis
+
+const redis = await createClient({ url: process.env.REDIS_URL }).connect();
+const registry = createRegistry(apps, { idempotency: createRedisIdempotencyStore(redis) });
+```
+
+`createPostgresIdempotencyStore(pool)` from `@syrinx/postgres` does the same on a node-postgres pool; call its `migrate()` once to create the table. Every store keeps outcomes for 24 hours (`ttlMs`) and frees a claim whose request never finished after 5 minutes (`inFlightTtlMs`; set it above your slowest write). Each claim carries a token, so a request that outlives its claim cannot overwrite or free the claim of the request that took the key over. If recording an outcome fails, the caller still gets the result and the key stays claimed, so a retry gets a 409 instead of running the write twice. The memory store holds at most 100,000 keys (`maxEntries`). `describeIdempotencyStore` from `@syrinx/testing/stores` is the contract they pass, for writing your own store.
+
 Schemas use [Standard Schema](https://standardschema.dev), so Zod, Valibot and ArkType all work.
 
 ### Views
@@ -106,6 +120,7 @@ pnpm smoke   # runtime smoke test; CI also runs it under Bun and Deno
 pnpm lint:openapi   # Spectral on the example's generated OpenAPI (Node 22+)
 pnpm conformance    # official MCP conformance suite against examples/conformance (start it first)
 pnpm --filter @syrinx/example-invoices size:views   # bytes per package in each view bundle
+pnpm test:stores    # store contract against real Redis and Postgres (set REDIS_URL and DATABASE_URL)
 pnpm test:e2e       # views in headless Chromium behind a real MCP Apps host page (run `pnpm exec playwright install chromium` once)
 ```
 

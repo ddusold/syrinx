@@ -9,6 +9,7 @@ import {
   op,
   resource,
   type AuditRecord,
+  type IdempotencyStore,
   type InvokeResult,
   type RegistryOptions,
 } from "./index.js";
@@ -175,6 +176,55 @@ describe("idempotency", () => {
     failNext = "internal";
     await expect(call(r, "1", "k4")).rejects.toThrow("boom");
     await expect(call(r, "1", "k4")).resolves.toMatchObject({ resultType: "complete" });
+  });
+
+  it("deduplicates in memory by default, and not at all with idempotency: false", async () => {
+    const r = registry();
+    expect(r.idempotent).toBe(true);
+    const first = await call(r, "1", "k6");
+    expect(await call(r, "1", "k6")).toEqual({ ...first, replayed: true });
+
+    const off = registry({ idempotency: false });
+    expect(off.idempotent).toBe(false);
+    await call(off, "1", "k7");
+    await expect(call(off, "1", "k7")).resolves.not.toHaveProperty("replayed");
+    await expect(call(off, "2", "k7")).resolves.toMatchObject({ resultType: "complete" });
+  });
+
+  it("answers with the result when the store fails to record it, and keeps the key claimed", async () => {
+    const memory = createMemoryIdempotencyStore();
+    const flaky: IdempotencyStore = {
+      begin: (key, fingerprint) => memory.begin(key, fingerprint),
+      complete: () => Promise.reject(new Error("connection reset")),
+      release: (key, token) => memory.release(key, token),
+    };
+    const errorLog = vi.fn();
+    const logger = { ...noopLogger, error: errorLog };
+    const r = registry({ idempotency: flaky });
+    const send = () => r.invoke("invoices", "send", { id: "1" }, { principal: writer, idempotencyKey: "k8", logger });
+    await expect(send()).resolves.toMatchObject({ resultType: "complete" });
+    expect(errorLog).toHaveBeenCalledWith(
+      "idempotency store complete failed",
+      expect.objectContaining({ "error.message": "connection reset" }),
+    );
+    // Not released, so the retry cannot send the invoice again.
+    await expect(send()).rejects.toMatchObject({ kind: "conflict" });
+  });
+
+  it("warns in production when writes fall back to the memory store", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      registry();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]?.[0]).toMatch(/other instances do not see them/);
+      registry({ idempotency: false });
+      registry({ idempotency: createMemoryIdempotencyStore() });
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllEnvs();
+      warn.mockRestore();
+    }
   });
 
   it("refuses a key whose first request is still running", async () => {

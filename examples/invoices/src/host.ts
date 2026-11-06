@@ -1,5 +1,4 @@
 import {
-  createMemoryIdempotencyStore,
   createRegistry,
   errors,
   resolveRequestStateKey,
@@ -82,7 +81,6 @@ export function createInvoicesHost(options: HostOptions = {}) {
   };
   const registry = createRegistry([customers, invoices], {
     requestStateKey: resolveRequestStateKey(options.requestStateKey),
-    idempotency: createMemoryIdempotencyStore(),
     ...(options.audit ? { audit: options.audit } : {}),
   });
   const app = createRestApp({

@@ -4,6 +4,9 @@ import type { Secret } from "./crypto.js";
 // Core carries no Node types; this also holds on runtimes without `process`.
 const env = () => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
 
+/** Whether `NODE_ENV` is `production`; false on runtimes without `process`. */
+export const isProduction = () => env()?.NODE_ENV === "production";
+
 type Authenticate = (request: Request) => Principal | undefined | Promise<Principal | undefined>;
 
 export interface AnonymousInDevOptions {
@@ -24,7 +27,7 @@ export function anonymousInDev(
   principal: Principal,
   options: AnonymousInDevOptions = {},
 ): Authenticate {
-  const production = options.production ?? env()?.NODE_ENV === "production";
+  const production = options.production ?? isProduction();
   if (production)
     throw new Error("anonymousInDev gives callers without credentials access; it is not allowed in production.");
   const warn =
@@ -72,7 +75,7 @@ export function resolveRequestStateKey(
 ): Secret | readonly Secret[] {
   const key = explicit ?? requestStateKeyFromEnv();
   if (key !== undefined) return key;
-  if (options.production ?? env()?.NODE_ENV === "production")
+  if (options.production ?? isProduction())
     throw new Error(
       `No request-state key: set ${REQUEST_STATE_KEY_ENV} (at least 32 bytes; several, comma-separated, to rotate) or pass requestStateKey.`,
     );

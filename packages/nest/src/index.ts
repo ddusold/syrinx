@@ -16,7 +16,6 @@ import {
 import { ModuleRef, NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import {
-  createMemoryIdempotencyStore,
   createRegistry,
   errorKinds,
   errors,
@@ -25,6 +24,7 @@ import {
   type App,
   type Context,
   type ErrorKind,
+  type IdempotencyStore,
   type Principal,
   type Secret,
 } from "@syrinx/core";
@@ -68,6 +68,11 @@ export interface SyrinxModuleOptions {
    * rotate); without either the host refuses to start under `NODE_ENV=production` and uses a development key otherwise.
    */
   requestStateKey?: Secret | readonly Secret[];
+  /**
+   * Where Idempotency-Key outcomes are kept: a shared store (`@syrinx/redis`, `@syrinx/postgres`) when more than one
+   * instance runs, or `false` to stop deduplicating. Defaults to the memory store.
+   */
+  idempotency?: IdempotencyStore | false;
   /** Reported to MCP clients; default to the first app's. */
   name?: string;
   version?: string;
@@ -120,13 +125,13 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
   }
 
   async onApplicationBootstrap() {
-    const { apps, views, requestStateKey } = this.options;
+    const { apps, views, requestStateKey, idempotency } = this.options;
     const deps: NestDeps = { nest: { get: (token) => this.moduleRef.get(token, { strict: false }) } };
     const authenticate = this.authenticator();
     const shells = views ? await this.shells(apps, views) : undefined;
     const registry = createRegistry(apps, {
       requestStateKey: resolveRequestStateKey(requestStateKey),
-      idempotency: createMemoryIdempotencyStore(),
+      ...(idempotency !== undefined ? { idempotency } : {}),
     });
     const app = createRestApp({ registry, deps, authenticate });
     const first = apps[0];
