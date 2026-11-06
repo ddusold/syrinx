@@ -2,7 +2,7 @@
 
 Declare an app once (typed operations, resources, prompts and views) and Syrinx serves it as a spec-compliant MCP server, a standard REST API with OpenAPI 3.1, and static UI for MCP Apps hosts, iframes and your own pages.
 
-> **Status:** pre-release. Nothing is published to npm yet, and the production hardening in Phase 4 is still landing, so
+> **Status:** pre-release. The production hardening in Phase 4 is still landing, so
 > do not run it in production. See [Roadmap](#roadmap).
 
 ## Why Syrinx
