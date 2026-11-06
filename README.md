@@ -66,6 +66,8 @@ export default app;
 
 The MCP surface accepts localhost Host and Origin headers only by default; set `allowedHosts` (and `allowedOrigins` for browser callers) when you deploy.
 
+Operations that confirm or ask seal their state with `requestStateKey`, which defaults to `SYRINX_REQUEST_STATE_KEY` (at least 32 bytes; several keys, comma-separated and newest first, rotate without breaking pending questions). Hosts built on `resolveRequestStateKey`, such as `@syrinx/nest`, refuse to start without one under `NODE_ENV=production` and use a development key otherwise.
+
 Schemas use [Standard Schema](https://standardschema.dev), so Zod, Valibot and ArkType all work.
 
 ### Views

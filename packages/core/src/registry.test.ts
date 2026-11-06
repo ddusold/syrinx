@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { z } from "zod";
 import {
   createRegistry,
@@ -235,6 +235,23 @@ describe("view tokens", () => {
     const token = await keyed.mintViewToken("invoices/browser");
     await expect(keyed.checkRequestState(token ?? "")).rejects.toMatchObject({ kind: "validation" });
     await expect(registry.mintViewToken("invoices/browser")).resolves.toBeUndefined();
+  });
+
+  it("are minted with SYRINX_REQUEST_STATE_KEY when no key is passed", async () => {
+    vi.stubEnv(
+      "SYRINX_REQUEST_STATE_KEY",
+      "new-env-request-state-key-32-bytes!!,view-token-test-request-state-key-32b",
+    );
+    try {
+      const fromEnv = createRegistry([invoices]);
+      const token = await fromEnv.mintViewToken("invoices/browser");
+      // The second key in the list still opens tokens sealed with the old key.
+      const old = await keyed.mintViewToken("invoices/browser");
+      await expect(fromEnv.openViewToken(old ?? "", {})).resolves.toBe("invoices/browser");
+      await expect(keyed.openViewToken(token ?? "", {})).rejects.toMatchObject({ kind: "validation" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

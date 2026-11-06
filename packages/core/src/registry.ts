@@ -23,6 +23,7 @@ import {
 } from "./context.js";
 import { canonicalJson, sha256, type Secret } from "./crypto.js";
 import { errors, SyrinxError, toFieldIssues, type ErrorKind, type FieldIssue } from "./errors.js";
+import { requestStateKeyFromEnv } from "./dev.js";
 import type { IdempotencyStore } from "./idempotency.js";
 import {
   createAsker,
@@ -75,7 +76,8 @@ export interface AuditRecord {
 export interface RegistryOptions {
   /**
    * Secret (at least 32 bytes) that encrypts `requestState`; required for operations that ask for input. Pass a list to
-   * rotate: the first key seals new state and every key in the list still opens state sealed earlier.
+   * rotate: the first key seals new state and every key in the list still opens state sealed earlier. Defaults to
+   * `SYRINX_REQUEST_STATE_KEY` (comma-separated, newest first) when that is set.
    */
   requestStateKey?: Secret | readonly Secret[];
   /** How long an `input_required` answer window stays open. Defaults to 600 seconds. */
@@ -289,7 +291,9 @@ async function run(
 /** Outcomes worth replaying for a repeated key. Transient failures release the key so a retry can run. */
 const STORED_ERRORS = new Set<ErrorKind>(["validation", "unauthenticated", "forbidden", "not_found", "conflict"]);
 
-export function createRegistry(apps: readonly App[], registryOptions: RegistryOptions = {}): Registry {
+export function createRegistry(apps: readonly App[], given: RegistryOptions = {}): Registry {
+  const requestStateKey = given.requestStateKey ?? requestStateKeyFromEnv();
+  const registryOptions: RegistryOptions = requestStateKey ? { ...given, requestStateKey } : given;
   const byName = new Map<string, App>();
   const uris = new Map<string, string>();
   for (const app of apps) {

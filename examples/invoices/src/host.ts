@@ -2,6 +2,7 @@ import {
   createMemoryIdempotencyStore,
   createRegistry,
   errors,
+  resolveRequestStateKey,
   type AuditRecord,
   type Logger,
   type Principal,
@@ -80,7 +81,7 @@ export function createInvoicesHost(options: HostOptions = {}) {
     customers: { find: (name) => Promise.resolve(directory.get(name)) },
   };
   const registry = createRegistry([customers, invoices], {
-    requestStateKey: options.requestStateKey ?? "dev-only-request-state-key-change-me!",
+    requestStateKey: resolveRequestStateKey(options.requestStateKey),
     idempotency: createMemoryIdempotencyStore(),
     ...(options.audit ? { audit: options.audit } : {}),
   });

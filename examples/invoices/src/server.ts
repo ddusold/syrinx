@@ -4,7 +4,6 @@ import { loadViewShells, serveViewAssets } from "@syrinx/ui/server";
 import { createInvoicesHost } from "./host.js";
 
 const port = Number(process.env.PORT ?? 3000);
-const requestStateKey = process.env.SYRINX_REQUEST_STATE_KEY;
 const viewsDir = new URL("../dist/views/", import.meta.url);
 
 // Views are optional: run `pnpm build:views` first to serve them. SYRINX_VIEWS=hosted serves bundles by URL with SRI
@@ -18,7 +17,6 @@ const shells = existsSync(new URL("manifest.json", viewsDir))
 if (!shells) console.log("No built views found; serving MCP without UI (run `pnpm build:views`).");
 
 const { app } = createInvoicesHost({
-  ...(requestStateKey ? { requestStateKey } : {}),
   ...(shells ? { views: shells, viewAssets: serveViewAssets(shells) } : {}),
   audit: (record) => {
     console.log(JSON.stringify({ audit: record }));
