@@ -177,6 +177,35 @@ describe("idempotency", () => {
     await expect(call(r, "1", "k4")).resolves.toMatchObject({ resultType: "complete" });
   });
 
+  it("deduplicates in memory by default, and not at all with idempotency: false", async () => {
+    const r = registry();
+    expect(r.idempotent).toBe(true);
+    const first = await call(r, "1", "k6");
+    expect(await call(r, "1", "k6")).toEqual({ ...first, replayed: true });
+
+    const off = registry({ idempotency: false });
+    expect(off.idempotent).toBe(false);
+    await call(off, "1", "k7");
+    await expect(call(off, "1", "k7")).resolves.not.toHaveProperty("replayed");
+    await expect(call(off, "2", "k7")).resolves.toMatchObject({ resultType: "complete" });
+  });
+
+  it("warns in production when writes fall back to the memory store", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      registry();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]?.[0]).toMatch(/other instances do not see them/);
+      registry({ idempotency: false });
+      registry({ idempotency: createMemoryIdempotencyStore() });
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllEnvs();
+      warn.mockRestore();
+    }
+  });
+
   it("refuses a key whose first request is still running", async () => {
     const store = createMemoryIdempotencyStore();
     await store.begin("/writer/invoices.send/k5", await sha256(canonicalJson({ id: "1" })));

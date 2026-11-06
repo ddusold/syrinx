@@ -113,3 +113,33 @@ jobs:
         with:
           name: playwright-results
           path: test-results/
+
+  stores:
+    name: Stores against Redis and Postgres
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: syrinx
+          POSTGRES_PASSWORD: syrinx
+          POSTGRES_DB: syrinx
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U syrinx" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      REDIS_URL: redis://localhost:6379
+      DATABASE_URL: postgres://syrinx:syrinx@localhost:5432/syrinx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The same contract suite the memory store passes, against every shared store; fails if any of them is skipped.
+      - run: pnpm test:stores

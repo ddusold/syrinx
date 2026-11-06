@@ -23,8 +23,8 @@ import {
 } from "./context.js";
 import { canonicalJson, sha256, type Secret } from "./crypto.js";
 import { errors, SyrinxError, toFieldIssues, type ErrorKind, type FieldIssue } from "./errors.js";
-import { requestStateKeyFromEnv } from "./dev.js";
-import type { IdempotencyStore } from "./idempotency.js";
+import { isProduction, requestStateKeyFromEnv } from "./dev.js";
+import { createMemoryIdempotencyStore, type IdempotencyStore } from "./idempotency.js";
 import {
   createAsker,
   createRequestStateCodec,
@@ -84,8 +84,12 @@ export interface RegistryOptions {
   requestStateTtlSeconds?: number;
   /** How long a view token, minted when a view's shell is served, stays valid. Defaults to 86400 seconds (a day). */
   viewTokenTtlSeconds?: number;
-  /** Where Idempotency-Key outcomes are kept. Without one, keys are passed to handlers but nothing is deduplicated. */
-  idempotency?: IdempotencyStore;
+  /**
+   * Where Idempotency-Key outcomes are kept. Defaults to the memory store, which deduplicates within one process only;
+   * under `NODE_ENV=production` the registry warns about that once. Pass `false` to stop deduplicating: keys still reach
+   * handlers, and the REST surface stops advertising the header.
+   */
+  idempotency?: IdempotencyStore | false;
   /** Receives one record per write (non-read-only operation), whatever the outcome. */
   audit?: (record: AuditRecord) => void | Promise<void>;
   /** Tenant enablement. Disabled apps, operations and resources are reported as not found. */
@@ -131,6 +135,8 @@ export interface Registry {
   allows(target: Target, options?: Pick<InvokeOptions, "principal" | "tenant">): Promise<boolean>;
   /** True when listings can differ between callers (scopes or tenant enablement), so they must not be shared. */
   readonly personalized: boolean;
+  /** True when repeated Idempotency-Keys replay the first outcome, false when the registry was given `idempotency: false`. */
+  readonly idempotent: boolean;
   invoke(app: string, operation: string, input: unknown, options?: InvokeOptions): Promise<InvokeResult>;
   read(app: string, resource: string, params: Record<string, unknown>, options?: InvokeOptions): Promise<unknown>;
   /** Renders a prompt. Prompts that declare `asks` may answer `input_required`, resumed like operations. */
@@ -294,6 +300,7 @@ const STORED_ERRORS = new Set<ErrorKind>(["validation", "unauthenticated", "forb
 export function createRegistry(apps: readonly App[], given: RegistryOptions = {}): Registry {
   const requestStateKey = given.requestStateKey ?? requestStateKeyFromEnv();
   const registryOptions: RegistryOptions = requestStateKey ? { ...given, requestStateKey } : given;
+  const idempotency = given.idempotency === false ? undefined : (given.idempotency ?? createMemoryIdempotencyStore());
   const byName = new Map<string, App>();
   const uris = new Map<string, string>();
   for (const app of apps) {
@@ -344,6 +351,11 @@ export function createRegistry(apps: readonly App[], given: RegistryOptions = {}
       [...Object.values(app.operations), ...Object.values(app.resources), ...Object.values(app.prompts)].some((m) =>
         scoped(m.permissions),
       ),
+    );
+  const writes = [...byName.values()].some((app) => Object.values(app.operations).some((o) => !o.annotations.readOnly));
+  if (given.idempotency === undefined && writes && isProduction())
+    console.warn(
+      "[syrinx] Idempotency-Keys are deduplicated in memory, so other instances do not see them. Pass a shared store (@syrinx/redis, @syrinx/postgres) as `idempotency`, or `false`.",
     );
 
   let codec: RequestStateCodec | undefined;
@@ -401,7 +413,7 @@ export function createRegistry(apps: readonly App[], given: RegistryOptions = {}
     const { interactionId, answers } = opened;
     track.interactionId = interactionId;
 
-    const store = !operation.annotations.readOnly && options.idempotencyKey ? registryOptions.idempotency : undefined;
+    const store = !operation.annotations.readOnly && options.idempotencyKey ? idempotency : undefined;
     const storeKey = `${options.tenant?.id ?? ""}/${principal.id}/${what}/${options.idempotencyKey ?? ""}`;
     if (store) {
       const claim = await store.begin(storeKey, inputHash);
@@ -458,6 +470,7 @@ export function createRegistry(apps: readonly App[], given: RegistryOptions = {}
     getPrompt,
     getView,
     personalized,
+    idempotent: idempotency !== undefined,
 
     async allows(target, options = {}) {
       const found = member(target);

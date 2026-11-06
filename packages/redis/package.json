@@ -1,0 +1,27 @@
+{
+  "name": "@syrinx/redis",
+  "version": "0.0.0",
+  "description": "Redis stores for Syrinx: idempotency records shared across instances, on the Redis client you already use.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@syrinx/core": "workspace:^"
+  },
+  "devDependencies": {
+    "ioredis": "^6.0.0",
+    "redis": "^6.3.1"
+  }
+}

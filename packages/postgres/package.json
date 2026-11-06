@@ -1,0 +1,28 @@
+{
+  "name": "@syrinx/postgres",
+  "version": "0.0.0",
+  "description": "Postgres stores for Syrinx: idempotency records shared across instances, on the Postgres client you already use.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@syrinx/core": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1",
+    "postgres": "^4.1.0"
+  }
+}

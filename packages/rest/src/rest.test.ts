@@ -1,7 +1,7 @@
 import { createMemoryIdempotencyStore, createRegistry, defineApp, errors, op, prompt, resource } from "@syrinx/core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { createRestApp } from "./index.js";
+import { createOpenApiDocument, createRestApp, type OpenApiDocument } from "./index.js";
 
 const Invoice = z.object({ id: z.string(), status: z.enum(["draft", "sent"]) });
 let sent = 0;
@@ -287,6 +287,16 @@ describe("OpenAPI", () => {
     expect(Object.keys(doc.paths)).not.toContain("/api/invoices/ops/get/resume");
     expect(Object.keys(doc.paths)).not.toContain("/api/invoices/ops/preview");
     expect((await app.request("/api/invoices/openapi.json")).status).toBe(200);
+  });
+
+  it("advertises Idempotency-Key on writes only while the registry deduplicates", () => {
+    const params = (doc: OpenApiDocument, path: string) =>
+      (doc.paths[path] as { post: { parameters: { name: string }[] } }).post.parameters.map((p) => p.name);
+    const on = createOpenApiDocument(createRegistry([invoices]));
+    expect(params(on, "/api/invoices/ops/void")).toContain("Idempotency-Key");
+    expect(params(on, "/api/invoices/ops/get")).not.toContain("Idempotency-Key");
+    const off = createOpenApiDocument(createRegistry([invoices], { idempotency: false }));
+    expect(params(off, "/api/invoices/ops/void")).not.toContain("Idempotency-Key");
   });
 });
 
