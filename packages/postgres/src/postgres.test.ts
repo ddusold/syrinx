@@ -41,6 +41,11 @@ describe("postgres store", () => {
     expect(() => createPostgresIdempotencyStore(pool, { table: "app.idempotency" })).not.toThrow();
   });
 
+  it("refuses TTLs that are not positive whole milliseconds", () => {
+    expect(() => createPostgresIdempotencyStore(pool, { ttlMs: 0 })).toThrow(/positive whole number/);
+    expect(() => createPostgresIdempotencyStore(pool, { inFlightTtlMs: 2.5 })).toThrow(/positive whole number/);
+  });
+
   it.skipIf(!url)("migrates idempotently and prunes expired records", async () => {
     const store = createPostgresIdempotencyStore(pool, { table: "syrinx_idempotency_prune", inFlightTtlMs: 1 });
     await store.migrate();

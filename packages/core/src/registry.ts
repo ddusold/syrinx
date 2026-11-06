@@ -24,7 +24,7 @@ import {
 import { canonicalJson, sha256, type Secret } from "./crypto.js";
 import { errors, SyrinxError, toFieldIssues, type ErrorKind, type FieldIssue } from "./errors.js";
 import { isProduction, requestStateKeyFromEnv } from "./dev.js";
-import { createMemoryIdempotencyStore, type IdempotencyStore } from "./idempotency.js";
+import { createMemoryIdempotencyStore, type IdempotencyOutcome, type IdempotencyStore } from "./idempotency.js";
 import {
   createAsker,
   createRequestStateCodec,
@@ -415,6 +415,7 @@ export function createRegistry(apps: readonly App[], given: RegistryOptions = {}
 
     const store = !operation.annotations.readOnly && options.idempotencyKey ? idempotency : undefined;
     const storeKey = `${options.tenant?.id ?? ""}/${principal.id}/${what}/${options.idempotencyKey ?? ""}`;
+    let token: string | undefined;
     if (store) {
       const claim = await store.begin(storeKey, inputHash);
       if (claim.status === "in_flight") throw errors.conflict("A request with this Idempotency-Key is still running.");
@@ -426,10 +427,27 @@ export function createRegistry(apps: readonly App[], given: RegistryOptions = {}
         if (outcome.ok) return { resultType: "complete", data: outcome.data, replayed: true };
         throw new SyrinxError(outcome.kind, outcome.message, outcome.issues);
       }
+      token = claim.token;
     }
+    // A store failure after the operation ran must not change its answer. On a failed `complete` the claim stays in
+    // flight, so retries get a conflict instead of running the write again until inFlightTtlMs frees the key.
+    const settle = async (step: "complete" | "release", outcome?: IdempotencyOutcome) => {
+      if (!store || token === undefined) return;
+      try {
+        await (outcome ? store.complete(storeKey, token, outcome) : store.release(storeKey, token));
+      } catch (error) {
+        (options.logger ?? noopLogger).error(`idempotency store ${step} failed`, {
+          "syrinx.app": appName,
+          "syrinx.operation": opName,
+          "syrinx.request_id": options.requestId,
+          "error.message": error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
 
+    let outcome: Awaited<ReturnType<typeof run>>;
     try {
-      const outcome = await run(
+      outcome = await run(
         { kind: "operation", app: appName, name: opName, output: operation.output },
         options,
         operation.annotations.asks
@@ -437,30 +455,28 @@ export function createRegistry(apps: readonly App[], given: RegistryOptions = {}
           : refuseAsking(`${what} asks for input but does not declare annotations.asks.`),
         (ctx) => perform(operation, parsed.value, ctx),
       );
-      if ("signal" in outcome) {
-        await store?.release(storeKey);
-        const requestState = await requestStates(what).mint(binding, interactionId, answers, {
-          key: outcome.signal.key,
-          message: outcome.signal.request.message,
-        });
-        return {
-          resultType: "input_required",
-          inputRequests: { [outcome.signal.key]: outcome.signal.request },
-          requestState,
-        };
-      }
-      await store?.complete(storeKey, { ok: true, data: outcome.value });
-      return { resultType: "complete", data: outcome.value };
     } catch (error) {
-      if (store) {
-        if (error instanceof SyrinxError && STORED_ERRORS.has(error.kind)) {
-          await store.complete(storeKey, { ok: false, kind: error.kind, message: error.message, issues: error.issues });
-        } else {
-          await store.release(storeKey);
-        }
+      if (error instanceof SyrinxError && STORED_ERRORS.has(error.kind)) {
+        await settle("complete", { ok: false, kind: error.kind, message: error.message, issues: error.issues });
+      } else {
+        await settle("release");
       }
       throw error;
     }
+    if ("signal" in outcome) {
+      await settle("release");
+      const requestState = await requestStates(what).mint(binding, interactionId, answers, {
+        key: outcome.signal.key,
+        message: outcome.signal.request.message,
+      });
+      return {
+        resultType: "input_required",
+        inputRequests: { [outcome.signal.key]: outcome.signal.request },
+        requestState,
+      };
+    }
+    await settle("complete", { ok: true, data: outcome.value });
+    return { resultType: "complete", data: outcome.value };
   }
 
   return {

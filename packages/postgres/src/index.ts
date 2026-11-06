@@ -1,6 +1,5 @@
 import {
-  DEFAULT_IDEMPOTENCY_TTL_MS,
-  DEFAULT_IN_FLIGHT_TTL_MS,
+  idempotencyTimings,
   type IdempotencyClaim,
   type IdempotencyOutcome,
   type IdempotencyStore,
@@ -43,30 +42,32 @@ const later = (param: string) => `now() + make_interval(secs => ${param}::double
 /** Idempotency records in one Postgres table, shared by every instance using the database. */
 export function createPostgresIdempotencyStore(
   client: PostgresClient,
-  {
-    table = "syrinx_idempotency",
-    ttlMs = DEFAULT_IDEMPOTENCY_TTL_MS,
-    inFlightTtlMs = DEFAULT_IN_FLIGHT_TTL_MS,
-  }: PostgresIdempotencyStoreOptions = {},
+  { table = "syrinx_idempotency", ...timings }: PostgresIdempotencyStoreOptions = {},
 ): PostgresIdempotencyStore {
+  const { ttlMs, inFlightTtlMs } = idempotencyTimings(timings);
   const t = quote(table);
   const index = quote(`${table.split(".").pop() ?? table}_expires_at`);
 
-  // The insert claims a missing or expired key; a live key's row is left alone and returns nothing. Concurrent claims
-  // of one key queue on its row lock, so exactly one of them gets the row back.
-  const claim = `INSERT INTO ${t} AS e (key, fingerprint, outcome, expires_at) VALUES ($1, $2, NULL, ${later("$3")})
-    ON CONFLICT (key) DO UPDATE SET fingerprint = EXCLUDED.fingerprint, outcome = NULL, expires_at = EXCLUDED.expires_at
-    WHERE e.expires_at <= now()
-    RETURNING key`;
-  const current = `SELECT fingerprint, outcome FROM ${t} WHERE key = $1 AND expires_at > now()`;
+  // One round trip: the insert claims a missing or expired key, and the outer select reads the live row otherwise. A
+  // live key's row is left alone; concurrent claims of one key queue on its row lock, so exactly one gets it. A claim
+  // committed after this statement's snapshot shows as neither, and the loop asks again.
+  const claim = `WITH claimed AS (
+      INSERT INTO ${t} AS e (key, fingerprint, token, outcome, expires_at) VALUES ($1, $2, $3, NULL, ${later("$4")})
+      ON CONFLICT (key) DO UPDATE
+        SET fingerprint = EXCLUDED.fingerprint, token = EXCLUDED.token, outcome = NULL, expires_at = EXCLUDED.expires_at
+        WHERE e.expires_at <= now()
+      RETURNING key
+    )
+    SELECT (SELECT count(*) FROM claimed)::int AS claimed, r.fingerprint, r.outcome
+    FROM (SELECT 1) one LEFT JOIN ${t} r ON r.key = $1 AND r.expires_at > now()`;
 
   return {
     async begin(key, fingerprint): Promise<IdempotencyClaim> {
-      // A live row seen by the insert can expire before the select reads it; then claim again.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if ((await client.query(claim, [key, fingerprint, inFlightTtlMs])).rows.length > 0) return { status: "new" };
-        const row = (await client.query(current, [key])).rows[0];
-        if (!row) continue;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const token = crypto.randomUUID();
+        const row = (await client.query(claim, [key, fingerprint, token, inFlightTtlMs])).rows[0];
+        if (Number(row?.claimed) > 0) return { status: "new", token };
+        if (row?.fingerprint === null || row?.fingerprint === undefined) continue;
         if (row.fingerprint !== fingerprint) return { status: "mismatch" };
         return typeof row.outcome === "string"
           ? { status: "done", outcome: JSON.parse(row.outcome) as IdempotencyOutcome }
@@ -74,23 +75,26 @@ export function createPostgresIdempotencyStore(
       }
       throw new Error(`Could not claim idempotency key "${key}".`);
     },
-    async complete(key, outcome) {
+    async complete(key, token, outcome) {
       await client.query(
-        `UPDATE ${t} SET outcome = $2, expires_at = ${later("$3")} WHERE key = $1 AND outcome IS NULL AND expires_at > now()`,
-        [key, JSON.stringify(outcome), ttlMs],
+        `UPDATE ${t} SET outcome = $3, token = NULL, expires_at = ${later("$4")}
+         WHERE key = $1 AND token = $2 AND outcome IS NULL AND expires_at > now()`,
+        [key, token, JSON.stringify(outcome), ttlMs],
       );
     },
-    async release(key) {
-      await client.query(`DELETE FROM ${t} WHERE key = $1 AND outcome IS NULL`, [key]);
+    async release(key, token) {
+      await client.query(`DELETE FROM ${t} WHERE key = $1 AND token = $2 AND outcome IS NULL`, [key, token]);
     },
     async migrate() {
       await client.query(
-        `CREATE TABLE IF NOT EXISTS ${t} (key text PRIMARY KEY, fingerprint text NOT NULL, outcome text, expires_at timestamptz NOT NULL)`,
+        `CREATE TABLE IF NOT EXISTS ${t} (key text PRIMARY KEY, fingerprint text NOT NULL, token text, outcome text, expires_at timestamptz NOT NULL)`,
       );
+      await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS token text`);
       await client.query(`CREATE INDEX IF NOT EXISTS ${index} ON ${t} (expires_at)`);
     },
     async prune() {
-      return (await client.query(`DELETE FROM ${t} WHERE expires_at <= now() RETURNING key`)).rows.length;
+      const deleted = `WITH d AS (DELETE FROM ${t} WHERE expires_at <= now() RETURNING 1) SELECT count(*)::int AS n FROM d`;
+      return Number((await client.query(deleted)).rows[0]?.n ?? 0);
     },
   };
 }

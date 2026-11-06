@@ -55,8 +55,19 @@ export type {
   Target,
 } from "./registry.js";
 export type { AskOptions, InputRequest, InputRequired, InputResponse, Resume } from "./interaction.js";
-export { createMemoryIdempotencyStore, DEFAULT_IDEMPOTENCY_TTL_MS, DEFAULT_IN_FLIGHT_TTL_MS } from "./idempotency.js";
-export type { IdempotencyClaim, IdempotencyOutcome, IdempotencyStore, IdempotencyStoreOptions } from "./idempotency.js";
+export {
+  createMemoryIdempotencyStore,
+  DEFAULT_IDEMPOTENCY_TTL_MS,
+  DEFAULT_IN_FLIGHT_TTL_MS,
+  idempotencyTimings,
+} from "./idempotency.js";
+export type {
+  IdempotencyClaim,
+  IdempotencyOutcome,
+  IdempotencyStore,
+  IdempotencyStoreOptions,
+  MemoryIdempotencyStoreOptions,
+} from "./idempotency.js";
 export { errorKinds, errors, SyrinxError } from "./errors.js";
 export type { ErrorKind, FieldIssue } from "./errors.js";
 export type { StandardJSONSchemaV1, StandardSchemaV1 } from "./standard-schema.js";

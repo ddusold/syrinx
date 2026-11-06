@@ -14,10 +14,18 @@ export interface IdempotencyStoreTimings {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Claims a key that must be new, and returns the claim's token. */
+async function claim(store: IdempotencyStore, key: string, fingerprint: string) {
+  const result = await store.begin(key, fingerprint);
+  if (result.status !== "new") throw new Error(`expected a new claim of ${key}, got ${result.status}`);
+  expect(result.token).toEqual(expect.any(String));
+  return result.token;
+}
+
 /**
- * The contract every `IdempotencyStore` passes, as vitest tests: claims, replays, mismatches, release, both TTLs and
- * concurrent claims. `create` gets the timings to build the store with; keys are unique per test, so a store shared
- * between tests or runs (a real Redis or Postgres) is fine.
+ * The contract every `IdempotencyStore` passes, as vitest tests: claims and their tokens, replays, mismatches, release,
+ * both TTLs, stale claims and concurrent claims. `create` gets the timings to build the store with; keys are unique per
+ * test, so a store shared between tests or runs (a real Redis or Postgres) is fine.
  */
 export function describeIdempotencyStore(
   name: string,
@@ -34,7 +42,7 @@ export function describeIdempotencyStore(
     it("claims a new key once, and reports a repeat as in flight or a mismatch", async () => {
       const s = await store();
       const k = key("claim");
-      await expect(s.begin(k, "fp-1")).resolves.toEqual({ status: "new" });
+      await claim(s, k, "fp-1");
       await expect(s.begin(k, "fp-1")).resolves.toEqual({ status: "in_flight" });
       await expect(s.begin(k, "fp-2")).resolves.toEqual({ status: "mismatch" });
     });
@@ -49,60 +57,82 @@ export function describeIdempotencyStore(
         issues: [{ path: "lines.0.cents", message: "Must be positive." }],
       };
       const [k1, k2] = [key("ok"), key("failed")];
-      await s.begin(k1, "fp");
-      await s.complete(k1, ok);
-      await s.begin(k2, "fp");
-      await s.complete(k2, failed);
+      await s.complete(k1, await claim(s, k1, "fp"), ok);
+      await s.complete(k2, await claim(s, k2, "fp"), failed);
       await expect(s.begin(k1, "fp")).resolves.toEqual({ status: "done", outcome: ok });
       await expect(s.begin(k2, "fp")).resolves.toEqual({ status: "done", outcome: failed });
       await expect(s.begin(k1, "other")).resolves.toEqual({ status: "mismatch" });
     });
 
-    it("keeps results that are not objects", async () => {
+    it("replays results as JSON, whatever their type", async () => {
       const s = await store();
       for (const data of [null, 0, "text", [1, 2], true]) {
         const k = key("scalar");
-        await s.begin(k, "fp");
-        await s.complete(k, { ok: true, data });
+        await s.complete(k, await claim(s, k, "fp"), { ok: true, data });
         await expect(s.begin(k, "fp")).resolves.toEqual({ status: "done", outcome: { ok: true, data } });
       }
+      const k = key("date");
+      await s.complete(k, await claim(s, k, "fp"), { ok: true, data: { at: new Date(0) } });
+      await expect(s.begin(k, "fp")).resolves.toEqual({
+        status: "done",
+        outcome: { ok: true, data: { at: "1970-01-01T00:00:00.000Z" } },
+      });
     });
 
     it("frees a released key for a retry, but never a completed one", async () => {
       const s = await store();
       const k = key("release");
-      await s.begin(k, "fp");
-      await s.release(k);
-      await expect(s.begin(k, "fp-2")).resolves.toEqual({ status: "new" });
-      await s.complete(k, { ok: true, data: 1 });
-      await s.release(k);
+      await s.release(k, await claim(s, k, "fp"));
+      const token = await claim(s, k, "fp-2");
+      await s.complete(k, token, { ok: true, data: 1 });
+      await s.release(k, token);
       await expect(s.begin(k, "fp-2")).resolves.toEqual({ status: "done", outcome: { ok: true, data: 1 } });
     });
 
-    it("ignores complete and release for keys it never claimed", async () => {
+    it("ignores complete and release without the claim's token", async () => {
       const s = await store();
-      const k = key("unclaimed");
-      await s.complete(k, { ok: true, data: 1 });
-      await s.release(k);
-      await expect(s.begin(k, "fp")).resolves.toEqual({ status: "new" });
+      const unclaimed = key("unclaimed");
+      await s.complete(unclaimed, "no-such-token", { ok: true, data: 1 });
+      await s.release(unclaimed, "no-such-token");
+      await claim(s, unclaimed, "fp");
+
+      const k = key("foreign");
+      await claim(s, k, "fp");
+      await s.complete(k, "someone-else", { ok: true, data: 1 });
+      await s.release(k, "someone-else");
+      await expect(s.begin(k, "fp")).resolves.toEqual({ status: "in_flight" });
     });
 
     it("expires an unfinished claim after inFlightTtlMs, and a finished one after ttlMs", async () => {
       const s = await store({ inFlightTtlMs: 150, ttlMs: 60_000 });
       const [stuck, done] = [key("stuck"), key("done")];
-      await s.begin(stuck, "fp");
-      await s.begin(done, "fp");
-      await s.complete(done, { ok: true, data: 1 });
+      await claim(s, stuck, "fp");
+      await s.complete(done, await claim(s, done, "fp"), { ok: true, data: 1 });
       await sleep(400);
-      await expect(s.begin(stuck, "fp")).resolves.toEqual({ status: "new" });
+      await claim(s, stuck, "fp");
       await expect(s.begin(done, "fp")).resolves.toEqual({ status: "done", outcome: { ok: true, data: 1 } });
 
       const short = await store({ ttlMs: 150 });
       const k = key("short");
-      await short.begin(k, "fp");
-      await short.complete(k, { ok: true, data: 1 });
+      await short.complete(k, await claim(short, k, "fp"), { ok: true, data: 1 });
       await sleep(400);
-      await expect(short.begin(k, "fp-2")).resolves.toEqual({ status: "new" });
+      await claim(short, k, "fp-2");
+    });
+
+    it("never lets a claim that outlived inFlightTtlMs finish or free the claim that took its key", async () => {
+      const s = await store({ inFlightTtlMs: 150 });
+      const k = key("stale");
+      const stale = await claim(s, k, "fp-a");
+      await sleep(400);
+      const fresh = await claim(s, k, "fp-b");
+      await s.complete(k, stale, { ok: true, data: "from the stale request" });
+      await s.release(k, stale);
+      await expect(s.begin(k, "fp-b")).resolves.toEqual({ status: "in_flight" });
+      await s.complete(k, fresh, { ok: true, data: "from the fresh request" });
+      await expect(s.begin(k, "fp-b")).resolves.toEqual({
+        status: "done",
+        outcome: { ok: true, data: "from the fresh request" },
+      });
     });
 
     it("gives a key to exactly one of many concurrent claims", async () => {
@@ -117,9 +147,10 @@ export function describeIdempotencyStore(
       const s = await store();
       const base = key("chars");
       const keys = [`${base}/a`, `${base}/a/`, `${base}/'quoted" ; --`, `${base}/ünïcødé/✓`, `${base}/\nline`];
-      for (const [i, k] of keys.entries()) await expect(s.begin(k, `fp-${i}`)).resolves.toEqual({ status: "new" });
+      const tokens = [];
+      for (const [i, k] of keys.entries()) tokens.push(await claim(s, k, `fp-${i}`));
       for (const [i, k] of keys.entries()) {
-        await s.complete(k, { ok: true, data: i });
+        await s.complete(k, tokens[i] ?? "", { ok: true, data: i });
         await expect(s.begin(k, `fp-${i}`)).resolves.toEqual({ status: "done", outcome: { ok: true, data: i } });
       }
     });

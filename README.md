@@ -80,7 +80,7 @@ const redis = await createClient({ url: process.env.REDIS_URL }).connect();
 const registry = createRegistry(apps, { idempotency: createRedisIdempotencyStore(redis) });
 ```
 
-`createPostgresIdempotencyStore(pool)` from `@syrinx/postgres` does the same on a node-postgres pool; call its `migrate()` once to create the table. Both keep outcomes for 24 hours (`ttlMs`) and free a claim whose request never finished after 5 minutes (`inFlightTtlMs`). `describeIdempotencyStore` from `@syrinx/testing/stores` is the contract they pass, for writing your own store.
+`createPostgresIdempotencyStore(pool)` from `@syrinx/postgres` does the same on a node-postgres pool; call its `migrate()` once to create the table. Every store keeps outcomes for 24 hours (`ttlMs`) and frees a claim whose request never finished after 5 minutes (`inFlightTtlMs`; set it above your slowest write). Each claim carries a token, so a request that outlives its claim cannot overwrite or free the claim of the request that took the key over. If recording an outcome fails, the caller still gets the result and the key stays claimed, so a retry gets a 409 instead of running the write twice. The memory store holds at most 100,000 keys (`maxEntries`). `describeIdempotencyStore` from `@syrinx/testing/stores` is the contract they pass, for writing your own store.
 
 Schemas use [Standard Schema](https://standardschema.dev), so Zod, Valibot and ArkType all work.
 
