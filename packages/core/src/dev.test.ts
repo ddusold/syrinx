@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Principal } from "./context.js";
-import { anonymousInDev } from "./dev.js";
+import { anonymousInDev, DEV_REQUEST_STATE_KEY, requestStateKeyFromEnv, resolveRequestStateKey } from "./dev.js";
 
 const viewer: Principal = { id: "viewer", scopes: ["people.read"] };
 const request = (headers: Record<string, string> = {}) => new Request("http://localhost/mcp", { headers });
@@ -42,5 +42,49 @@ describe("anonymousInDev", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("request-state key from the environment", () => {
+  const withEnv = (vars: Record<string, string>, run: () => void) => {
+    for (const [name, value] of Object.entries(vars)) vi.stubEnv(name, value);
+    try {
+      run();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  };
+
+  it("reads SYRINX_REQUEST_STATE_KEY as a comma-separated list, newest first", () => {
+    withEnv({ SYRINX_REQUEST_STATE_KEY: " new-key , old-key,," }, () => {
+      expect(requestStateKeyFromEnv()).toEqual(["new-key", "old-key"]);
+    });
+    withEnv({ SYRINX_REQUEST_STATE_KEY: " , " }, () => {
+      expect(requestStateKeyFromEnv()).toBeUndefined();
+    });
+  });
+
+  it("prefers an explicit key, then the environment", () => {
+    const warn = vi.fn();
+    withEnv({ SYRINX_REQUEST_STATE_KEY: "from-env", NODE_ENV: "production" }, () => {
+      expect(resolveRequestStateKey("explicit", { warn })).toBe("explicit");
+      expect(resolveRequestStateKey(undefined, { warn })).toEqual(["from-env"]);
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the development key with a warning outside production", () => {
+    const warn = vi.fn();
+    withEnv({ SYRINX_REQUEST_STATE_KEY: "" }, () => {
+      expect(resolveRequestStateKey(undefined, { warn, production: false })).toBe(DEV_REQUEST_STATE_KEY);
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("SYRINX_REQUEST_STATE_KEY"));
+  });
+
+  it("refuses to fall back in production", () => {
+    withEnv({ SYRINX_REQUEST_STATE_KEY: "", NODE_ENV: "production" }, () => {
+      expect(() => resolveRequestStateKey(undefined)).toThrow(/set SYRINX_REQUEST_STATE_KEY/);
+    });
+    expect(() => resolveRequestStateKey(undefined, { production: true })).toThrow(/No request-state key/);
   });
 });

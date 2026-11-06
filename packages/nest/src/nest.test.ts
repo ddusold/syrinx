@@ -2,7 +2,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Body, Controller, Get, Injectable, Module, Post, type INestApplication } from "@nestjs/common";
 import { defineApp, errors, op, SyrinxError } from "@syrinx/core";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createSyrinxApp, listen, remoteApp, SyrinxModule, type NestContext } from "./index.js";
 
@@ -116,6 +116,23 @@ describe("@syrinx/nest", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
     expect(await response.text()).toContain("greetings");
+  });
+});
+
+describe("request-state key", () => {
+  it("refuses to start in production without one", async () => {
+    @Module({ imports: [SyrinxModule.forRoot({ apps: [greetings] })] })
+    // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- a Nest module is a class that only carries metadata
+    class KeylessModule {}
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("SYRINX_REQUEST_STATE_KEY", "");
+    try {
+      const keyless = await createSyrinxApp(KeylessModule, { logger: false });
+      await expect(keyless.init()).rejects.toThrow(/SYRINX_REQUEST_STATE_KEY/);
+      await keyless.close();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

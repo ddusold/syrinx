@@ -20,11 +20,13 @@ import {
   createRegistry,
   errorKinds,
   errors,
+  resolveRequestStateKey,
   SyrinxError,
   type App,
   type Context,
   type ErrorKind,
   type Principal,
+  type Secret,
 } from "@syrinx/core";
 import { createMcpSurface } from "@syrinx/mcp";
 import { createRestApp } from "@syrinx/rest";
@@ -61,8 +63,11 @@ export interface SyrinxModuleOptions {
    * authentication in with `authenticate`.
    */
   principals?: Record<string, Principal>;
-  /** Signs the state of input round trips; set a long random value outside local development. */
-  requestStateKey?: string;
+  /**
+   * Encrypts the state of input round trips. Defaults to `SYRINX_REQUEST_STATE_KEY` (comma-separated, newest first, to
+   * rotate); without either the host refuses to start under `NODE_ENV=production` and uses a development key otherwise.
+   */
+  requestStateKey?: Secret | readonly Secret[];
   /** Reported to MCP clients; default to the first app's. */
   name?: string;
   version?: string;
@@ -120,7 +125,7 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
     const authenticate = this.authenticator();
     const shells = views ? await this.shells(apps, views) : undefined;
     const registry = createRegistry(apps, {
-      requestStateKey: requestStateKey ?? "dev-only-request-state-key-change-me!",
+      requestStateKey: resolveRequestStateKey(requestStateKey),
       idempotency: createMemoryIdempotencyStore(),
     });
     const app = createRestApp({ registry, deps, authenticate });
