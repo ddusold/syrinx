@@ -59,6 +59,14 @@ describe("devTokens", () => {
     expect(await authenticate(bearer("Bearer viewer"))).toBe(viewer);
     expect(await authenticate(bearer("bearer  viewer"))).toBe(viewer);
     expect(await authenticate(request())).toBeUndefined();
+    expect(await authenticate(bearer(""))).toBeUndefined();
+  });
+
+  it("reads tokens added after creation", async () => {
+    const tokens: Record<string, Principal> = {};
+    const late = devTokens(tokens, { production: false });
+    tokens.viewer = viewer;
+    expect(await late(bearer("Bearer viewer"))).toBe(viewer);
   });
 
   it("refuses unknown tokens, other schemes and inherited property names", () => {

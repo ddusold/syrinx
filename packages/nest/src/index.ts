@@ -195,7 +195,7 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
     if (authenticate) return authenticate;
     if (principals) return devTokens(principals);
     return (request: Request): undefined => {
-      if (request.headers.get("authorization") !== null) throw errors.unauthenticated("Unknown token.");
+      if (request.headers.get("authorization")) throw errors.unauthenticated("Unknown token.");
     };
   }
 

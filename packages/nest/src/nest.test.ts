@@ -167,11 +167,11 @@ describe("principals", () => {
     // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- a Nest module is a class that only carries metadata
     class DemoModule {}
     vi.stubEnv("NODE_ENV", "production");
+    const demo = await createSyrinxApp(DemoModule, { logger: false });
     try {
-      const demo = await createSyrinxApp(DemoModule, { logger: false });
       await expect(demo.init()).rejects.toThrow(/devTokens/);
-      await demo.close();
     } finally {
+      await demo.close();
       vi.unstubAllEnvs();
     }
   });

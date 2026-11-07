@@ -55,21 +55,19 @@ export interface DevTokensOptions {
 
 /**
  * Development only: authenticates `Authorization: Bearer <token>` against a fixed token → principal map, for demos and
- * tests. No header is anonymous; any other header, or an unknown token, is refused. Throws at creation when `NODE_ENV`
+ * tests. No header (or an empty one) is anonymous; any other header, or an unknown token, is refused. Throws at creation when `NODE_ENV`
  * is `production`, since the tokens live in source.
  */
 export function devTokens(tokens: Readonly<Record<string, Principal>>, options: DevTokensOptions = {}): Authenticate {
   if (options.production ?? isProduction())
     throw new Error("devTokens authenticates with tokens kept in source; it is not allowed in production.");
-  // Own properties only, so `toString` and friends are not tokens.
-  const principals = new Map(Object.entries(tokens));
   return (request) => {
     const header = request.headers.get("authorization");
-    if (header === null) return undefined;
+    if (!header) return undefined;
     const token = /^Bearer\s+(\S+)\s*$/i.exec(header)?.[1];
-    const principal = token === undefined ? undefined : principals.get(token);
-    if (!principal) throw errors.unauthenticated("Unknown token.");
-    return principal;
+    // Own properties only, so `toString` and friends are not tokens.
+    if (token === undefined || !Object.hasOwn(tokens, token)) throw errors.unauthenticated("Unknown token.");
+    return tokens[token];
   };
 }
 
