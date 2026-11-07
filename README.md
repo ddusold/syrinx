@@ -14,7 +14,7 @@ Most services now need two front doors: an HTTP API for programs and people, and
 - **Agents that ask before they act.** An operation can ask the caller to confirm (`confirm`) or for more input (`ctx.ask`) partway through. MCP clients see an elicitation; REST clients get an `input_required` result and resume with the answers. The pending state is sealed and signed, so the server stays stateless and a caller cannot tamper with it.
 - **UI that travels with the tools.** A view is a small Vue (or any framework) component bound to an operation's results. MCP Apps hosts render it inline in the chat; the same bundle works in an iframe or on your own page.
 - **Standards, not lock-in.** Schemas use [Standard Schema](https://standardschema.dev) (Zod, Valibot, ArkType). The REST surface uses problem+json errors and OpenAPI 3.1; the MCP surface uses the official TypeScript SDK and runs the official conformance suite. It runs on Node, Bun and Deno, standalone or inside NestJS.
-- **Safe defaults.** Writes can be retried with an `Idempotency-Key` and replay their first outcome. Tools are scoped by permission and hidden from callers who cannot use them. The MCP surface only accepts localhost hosts until you configure it.
+- **Safe defaults.** Writes can be retried with an `Idempotency-Key` and replay their first outcome. Tools are scoped by permission and hidden from callers who cannot use them. The MCP surface only accepts localhost hosts until you configure it. Under `NODE_ENV=production`, REST and MCP refuse anonymous callers, discovery included, unless you pass `requireAuth: false`.
 
 ## How it works
 

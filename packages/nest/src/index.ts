@@ -22,6 +22,7 @@ import {
   errorKinds,
   errors,
   resolveRequestStateKey,
+  resolveRequireAuth,
   SyrinxError,
   type App,
   type Attributes,
@@ -67,6 +68,11 @@ export interface SyrinxModuleOptions {
    * `NODE_ENV=production`. Ignored when `authenticate` is set, which is where a real app plugs its own authentication in.
    */
   principals?: Record<string, Principal>;
+  /**
+   * Refuse anonymous callers on REST and MCP alike (401, except /healthz). Defaults to on under `NODE_ENV=production`
+   * and off otherwise; pass false to serve anonymous callers. On without `authenticate` or `principals` refuses to start.
+   */
+  requireAuth?: boolean;
   /**
    * Encrypts the state of input round trips. Defaults to `SYRINX_REQUEST_STATE_KEY` (comma-separated, newest first, to
    * rotate); without either the host refuses to start under `NODE_ENV=production` and uses a development key otherwise.
@@ -169,12 +175,17 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
       requestStateKey: resolveRequestStateKey(requestStateKey),
       ...(idempotency !== undefined ? { idempotency } : {}),
     });
-    const app = createRestApp({ registry, deps, authenticate, logger });
+    const requireAuth = resolveRequireAuth(
+      this.options.requireAuth,
+      this.options.authenticate ?? this.options.principals,
+    );
+    const app = createRestApp({ registry, deps, authenticate, requireAuth, logger });
     const first = apps[0];
     const mcp = createMcpSurface({
       registry,
       deps,
       authenticate,
+      requireAuth,
       logger,
       name: this.options.name ?? first?.name ?? "syrinx",
       version: this.options.version ?? first?.version ?? "0.0.0",

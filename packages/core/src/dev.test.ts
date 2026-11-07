@@ -6,6 +6,7 @@ import {
   devTokens,
   requestStateKeyFromEnv,
   resolveRequestStateKey,
+  resolveRequireAuth,
 } from "./dev.js";
 
 const viewer: Principal = { id: "viewer", scopes: ["people.read"] };
@@ -129,5 +130,21 @@ describe("request-state key from the environment", () => {
       expect(() => resolveRequestStateKey(undefined)).toThrow(/set SYRINX_REQUEST_STATE_KEY/);
     });
     expect(() => resolveRequestStateKey(undefined, { production: true })).toThrow(/No request-state key/);
+  });
+});
+
+describe("resolveRequireAuth", () => {
+  const authenticate = () => undefined;
+
+  it("follows the explicit setting, else NODE_ENV", () => {
+    expect(resolveRequireAuth(undefined, authenticate, { production: false })).toBe(false);
+    expect(resolveRequireAuth(undefined, authenticate, { production: true })).toBe(true);
+    expect(resolveRequireAuth(false, undefined, { production: true })).toBe(false);
+    expect(resolveRequireAuth(true, authenticate, { production: false })).toBe(true);
+  });
+
+  it("refuses to require auth with nothing to authenticate", () => {
+    expect(() => resolveRequireAuth(undefined, undefined, { production: true })).toThrow(/default under NODE_ENV/);
+    expect(() => resolveRequireAuth(true, undefined)).toThrow(/no authenticate/);
   });
 });

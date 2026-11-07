@@ -1,4 +1,4 @@
-import { lintApp, logUnhandled, SyrinxError, type Principal, type Tenant } from "@syrinx/core";
+import { lintApp, logUnhandled, resolveRequireAuth, SyrinxError, type Principal, type Tenant } from "@syrinx/core";
 import {
   createMcpHandler,
   getOAuthProtectedResourceMetadataUrl,
@@ -55,7 +55,10 @@ export interface McpOptions<Deps = unknown> extends ProjectionOptions<Deps> {
   allowedHosts?: string[] | false;
   /** Hostnames browsers may call from (the Origin header). Requests without Origin pass. Defaults to localhost. */
   allowedOrigins?: string[];
-  /** Answer anonymous requests with 401 and a Bearer challenge, so OAuth clients know to sign in. */
+  /**
+   * Answer anonymous requests with 401 and a Bearer challenge, so OAuth clients know to sign in. Defaults to on under
+   * `NODE_ENV=production` and off otherwise; pass false to serve anonymous callers. On without `authenticate` throws.
+   */
   requireAuth?: boolean;
   /** RFC 9728 Protected Resource Metadata (and RFC 8414 passthrough), served under `/.well-known/`. */
   oauth?: AuthMetadataOptions;
@@ -170,6 +173,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const { registry } = options;
   const logger = routineLogger(options);
   const basePath = (options.basePath ?? "/mcp").replace(/\/$/, "");
+  const requireAuth = resolveRequireAuth(options.requireAuth, options.authenticate);
   checkMembers(registry, "all");
   const withViews = [...registry.apps.values()].filter((a) => Object.keys(a.views).length).map((a) => a.name);
   if (withViews.length && !options.views) {
@@ -243,7 +247,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
       let tenant: Tenant | undefined;
       try {
         principal = await options.authenticate?.(request);
-        if (!principal && options.requireAuth) {
+        if (!principal && requireAuth) {
           return jsonRpcError(401, "Authentication required.", { "www-authenticate": challenge });
         }
         tenant = await options.resolveTenant?.(principal, request);

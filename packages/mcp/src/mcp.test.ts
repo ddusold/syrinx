@@ -468,6 +468,20 @@ describe("endpoints and protection", () => {
     });
   });
 
+  it("requires auth by default in production, and refuses it without authenticate", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const strict = createMcpSurface({ ...surfaceOptions, authenticate: () => undefined, allowedHosts: false });
+      const response = await strict.fetch(new Request("http://localhost/mcp", { method: "POST", body: "{}" }));
+      expect(response.status).toBe(401);
+      const { authenticate: _, ...anonymousOnly } = surfaceOptions;
+      expect(() => createMcpSurface(anonymousOnly)).toThrow(/requireAuth is on \(the default/);
+      expect(() => createMcpSurface({ ...anonymousOnly, requireAuth: false })).not.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("warns about weak descriptions and rejects tool name collisions at startup", () => {
     const warnings: string[] = [];
     const logger: Logger = { ...noopLogger, warn: (m) => warnings.push(m) };

@@ -263,6 +263,41 @@ describe("authentication and tenants", () => {
       401,
     );
   });
+
+  it("serves anonymous discovery by default outside production", async () => {
+    expect((await app.request("/openapi.json")).status).toBe(200);
+    expect((await app.request("/api")).status).toBe(200);
+  });
+
+  it("with requireAuth, refuses anonymous callers everywhere but /healthz, authenticating once", async () => {
+    const authenticate = vi.fn((request: Request) =>
+      request.headers.get("authorization") === "Bearer good" ? { id: "user_1", scopes: ["me:read"] } : undefined,
+    );
+    const strict = createRestApp({ registry, authenticate, requireAuth: true });
+    strict.get("/mcp", (c) => c.text("mounted by the host"));
+    for (const path of ["/openapi.json", "/api", "/api/invoices", "/api/invoices/openapi.json", "/api/nope"]) {
+      const res = await strict.request(path);
+      expect(res.status, path).toBe(401);
+      expect(res.headers.get("www-authenticate"), path).toBe("Bearer");
+    }
+    expect((await strict.request("/healthz")).status).toBe(200);
+    expect((await strict.request("/mcp")).status).toBe(200);
+    authenticate.mockClear();
+    const res = await strict.request("/api/invoices/ops/whoami", { headers: { authorization: "Bearer good" } });
+    expect(await json(res)).toMatchObject({ data: { principal: "user_1" } });
+    expect(authenticate).toHaveBeenCalledOnce();
+  });
+
+  it("defaults requireAuth on in production, and refuses it without authenticate", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      expect(() => createRestApp({ registry })).toThrow(/requireAuth is on \(the default/);
+      expect(() => createRestApp({ registry, requireAuth: false })).not.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(() => createRestApp({ registry, requireAuth: true })).toThrow(/no authenticate/);
+  });
 });
 
 describe("problems", () => {
