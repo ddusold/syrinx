@@ -38,8 +38,8 @@ export interface RestOptions<Deps = unknown> {
     request: Request,
   ) => Tenant | undefined | Promise<Tenant | undefined>;
   /**
-   * Answer anonymous requests to /openapi.json and /api/* (the catalog, manifests and calls) with 401. CORS preflights,
-   * /healthz and routes a host adds to the app are not covered. Defaults to on under `NODE_ENV=production` and off
+   * Answer anonymous requests to /openapi.json and /api/* (the catalog, manifests and calls) with 401. This also covers
+   * routes a host adds under /api; CORS preflights, /healthz and other routes a host adds are not covered. Defaults to on under `NODE_ENV=production` and off
    * otherwise; pass false to serve anonymous callers. On without `authenticate` throws.
    */
   requireAuth?: boolean;
@@ -113,6 +113,18 @@ const meta = (call: Call, replayed?: true) => {
   return { requestId: call.requestId, ...(traceId ? { traceId } : {}), ...(replayed ? { replayed } : {}) };
 };
 
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const hostnameOf = (host: string) =>
+  host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : (host.split(":")[0] ?? host);
+const isLocalHost = (host: string) => LOCAL_HOSTNAMES.has(hostnameOf(host).toLowerCase());
+const isLocalOrigin = (origin: string) => {
+  try {
+    return isLocalHost(new URL(origin).host);
+  } catch {
+    return false;
+  }
+};
+
 export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   const { registry } = options;
   const bypass = localAuthBypass(registry.apps.values());
@@ -144,6 +156,18 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
     }
     return found.principal;
   };
+  if (bypass) {
+    // Every caller holds every scope here, so only the local machine may call: refuse pages on other origins (a
+    // text/plain POST needs no preflight) and DNS rebinding, as the MCP surface does by default.
+    app.use(async (c, next) => {
+      const host = c.req.header("host") ?? new URL(c.req.url).host;
+      const origin = c.req.header("origin");
+      if (!isLocalHost(host) || (origin !== undefined && !isLocalOrigin(origin))) {
+        throw new SyrinxError("forbidden", "SYRINX_LOCAL_BYPASS_AUTH only serves requests from this machine.");
+      }
+      await next();
+    });
+  }
   if (requireAuth) {
     // Only this surface's routes: hosts mount MCP and view assets on the same app, and those answer for themselves.
     // Preflights carry no credentials; refusing them would break CORS for authenticated browser clients.

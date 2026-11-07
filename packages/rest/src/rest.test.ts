@@ -298,6 +298,16 @@ describe("authentication and tenants", () => {
       expect(await json(await open.request("/api/invoices/ops/whoami"))).toMatchObject({
         data: { principal: "local" },
       });
+      const local = { host: "localhost:3000", origin: "http://localhost:5173" };
+      expect((await open.request("/api/invoices/ops/whoami", { headers: local })).status).toBe(200);
+      const crossSite = await open.request("/api/invoices/ops/whoami", {
+        method: "POST",
+        headers: { host: "localhost:3000", origin: "https://evil.example", "content-type": "text/plain" },
+        body: "{}",
+      });
+      expect(crossSite.status).toBe(403);
+      const rebound = await open.request("/api/invoices/ops/whoami", { headers: { host: "evil.example" } });
+      expect(rebound.status).toBe(403);
       vi.stubEnv("NODE_ENV", "production");
       expect(() => createRestApp({ registry, requireAuth: false })).toThrow(/not allowed in production/);
     } finally {

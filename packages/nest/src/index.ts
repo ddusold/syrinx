@@ -171,7 +171,7 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
     const deps: NestDeps = { nest: { get: (token) => this.moduleRef.get(token, { strict: false }) } };
     const bypass = localAuthBypass(apps);
     const authenticate = bypass ? () => bypass : this.authenticator();
-    // Configuration checks run before views build, so a bad config fails fast and leaves no watcher behind.
+    // Auth and request-state key checks run before views build, so those mistakes fail fast and start no watcher.
     const registry = createRegistry(apps, {
       requestStateKey: resolveRequestStateKey(requestStateKey),
       ...(idempotency !== undefined ? { idempotency } : {}),
@@ -212,8 +212,9 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
       if (!header) return undefined;
       const token = header.replace(/^Bearer /, "");
       // Own properties only, so `toString` and friends are not tokens.
-      if (!principals || !Object.hasOwn(principals, token)) throw errors.unauthenticated("Unknown token.");
-      return principals[token];
+      const principal = principals && Object.hasOwn(principals, token) ? principals[token] : undefined;
+      if (!principal) throw errors.unauthenticated("Unknown token.");
+      return principal;
     };
   }
 

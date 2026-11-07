@@ -53,8 +53,9 @@ function authenticate(request: Request): Principal | undefined {
   const header = request.headers.get("authorization");
   if (!header) return undefined;
   const token = header.replace(/^Bearer /, "");
-  if (!Object.hasOwn(demoPrincipals, token)) throw errors.unauthenticated("Unknown token.");
-  return demoPrincipals[token];
+  const principal = Object.hasOwn(demoPrincipals, token) ? demoPrincipals[token] : undefined;
+  if (!principal) throw errors.unauthenticated("Unknown token.");
+  return principal;
 }
 
 export interface HostOptions {
