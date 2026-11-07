@@ -263,6 +263,68 @@ describe("authentication and tenants", () => {
       401,
     );
   });
+
+  it("serves anonymous discovery by default outside production", async () => {
+    expect((await app.request("/openapi.json")).status).toBe(200);
+    expect((await app.request("/api")).status).toBe(200);
+  });
+
+  it("with requireAuth, refuses anonymous callers everywhere but /healthz, authenticating once", async () => {
+    const authenticate = vi.fn((request: Request) =>
+      request.headers.get("authorization") === "Bearer good" ? { id: "user_1", scopes: ["me:read"] } : undefined,
+    );
+    const strict = createRestApp({ registry, authenticate, requireAuth: true });
+    strict.get("/mcp", (c) => c.text("mounted by the host"));
+    for (const path of ["/openapi.json", "/api", "/api/invoices", "/api/invoices/openapi.json", "/api/nope"]) {
+      const res = await strict.request(path);
+      expect(res.status, path).toBe(401);
+      expect(res.headers.get("www-authenticate"), path).toBe("Bearer");
+    }
+    expect((await strict.request("/healthz")).status).toBe(200);
+    expect((await strict.request("/mcp")).status).toBe(200);
+    expect((await strict.request("/api/invoices/ops/whoami", { method: "OPTIONS" })).status).not.toBe(401);
+    const refused = await strict.request("/api", { headers: { "x-request-id": "req_9" } });
+    expect(await json(refused)).toMatchObject({ requestId: "req_9" });
+    authenticate.mockClear();
+    const res = await strict.request("/api/invoices/ops/whoami", { headers: { authorization: "Bearer good" } });
+    expect(await json(res)).toMatchObject({ data: { principal: "user_1" } });
+    expect(authenticate).toHaveBeenCalledOnce();
+  });
+
+  it("lets every caller through as the local principal with SYRINX_LOCAL_BYPASS_AUTH", async () => {
+    vi.stubEnv("SYRINX_LOCAL_BYPASS_AUTH", "1");
+    try {
+      const open = createRestApp({ registry, requireAuth: true });
+      expect(await json(await open.request("/api/invoices/ops/whoami"))).toMatchObject({
+        data: { principal: "local" },
+      });
+      const local = { host: "localhost:3000", origin: "http://localhost:5173" };
+      expect((await open.request("/api/invoices/ops/whoami", { headers: local })).status).toBe(200);
+      const crossSite = await open.request("/api/invoices/ops/whoami", {
+        method: "POST",
+        headers: { host: "localhost:3000", origin: "https://evil.example", "content-type": "text/plain" },
+        body: "{}",
+      });
+      expect(crossSite.status).toBe(403);
+      const rebound = await open.request("/api/invoices/ops/whoami", { headers: { host: "evil.example" } });
+      expect(rebound.status).toBe(403);
+      vi.stubEnv("NODE_ENV", "production");
+      expect(() => createRestApp({ registry, requireAuth: false })).toThrow(/not allowed in production/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("defaults requireAuth on in production, and refuses it without authenticate", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      expect(() => createRestApp({ registry })).toThrow(/requireAuth is on \(the default/);
+      expect(() => createRestApp({ registry, requireAuth: false })).not.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(() => createRestApp({ registry, requireAuth: true })).toThrow(/no authenticate/);
+  });
 });
 
 describe("problems", () => {

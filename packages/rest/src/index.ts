@@ -1,7 +1,9 @@
 import {
   isVisible,
+  localAuthBypass,
   logUnhandled,
   matchUriTemplate,
+  resolveRequireAuth,
   SyrinxError,
   toJsonSchema,
   type InvokeOptions,
@@ -36,6 +38,12 @@ export interface RestOptions<Deps = unknown> {
     request: Request,
   ) => Tenant | undefined | Promise<Tenant | undefined>;
   /**
+   * Answer anonymous requests to /openapi.json and /api/* (the catalog, manifests and calls) with 401. This also covers
+   * routes a host adds under /api; CORS preflights, /healthz and other routes a host adds are not covered. Defaults to on under `NODE_ENV=production` and off
+   * otherwise; pass false to serve anonymous callers. On without `authenticate` throws.
+   */
+  requireAuth?: boolean;
+  /**
    * Receives operation logs and internal errors (the ones callers see only as an internal error). Without it, internal
    * errors still go to console.error; `false` drops them.
    */
@@ -52,6 +60,7 @@ export const PROBLEM_TYPE_BASE = "https://ddusold.github.io/syrinx/problems/";
 const problemType = (kind: string) => `${PROBLEM_TYPE_BASE}${kind}`;
 
 const REQUEST_ID = "syrinx.requestId";
+const PRINCIPAL = "syrinx.principal";
 
 function problem(c: Context, error: unknown, logger?: Logger | false) {
   const requestId = c.get(REQUEST_ID as never) as string | undefined;
@@ -104,8 +113,23 @@ const meta = (call: Call, replayed?: true) => {
   return { requestId: call.requestId, ...(traceId ? { traceId } : {}), ...(replayed ? { replayed } : {}) };
 };
 
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const hostnameOf = (host: string) =>
+  host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : (host.split(":")[0] ?? host);
+const isLocalHost = (host: string) => LOCAL_HOSTNAMES.has(hostnameOf(host).toLowerCase());
+const isLocalOrigin = (origin: string) => {
+  try {
+    return isLocalHost(new URL(origin).host);
+  } catch {
+    return false;
+  }
+};
+
 export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   const { registry } = options;
+  const bypass = localAuthBypass(registry.apps.values());
+  const authenticate = bypass ? () => bypass : options.authenticate;
+  const requireAuth = resolveRequireAuth(options.requireAuth, authenticate !== undefined);
   const app = new Hono();
   const etags = etag();
 
@@ -114,11 +138,54 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   // Reads get ETags so clients and caches can revalidate manifests, documents and resources cheaply.
   app.use(async (c, next) => (c.req.method === "GET" ? etags(c, next) : next()));
 
+  const requestIdOf = (c: Context): string => {
+    let requestId = c.get(REQUEST_ID as never) as string | undefined;
+    if (!requestId) {
+      requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
+      c.set(REQUEST_ID as never, requestId as never);
+    }
+    return requestId;
+  };
+
+  /** The caller, authenticated once per request. */
+  const principalOf = async (c: Context): Promise<Principal | undefined> => {
+    let found = c.get(PRINCIPAL as never) as { principal: Principal | undefined } | undefined;
+    if (!found) {
+      found = { principal: await authenticate?.(c.req.raw) };
+      c.set(PRINCIPAL as never, found as never);
+    }
+    return found.principal;
+  };
+  if (bypass) {
+    // Every caller holds every scope here, so only the local machine may call: refuse pages on other origins (a
+    // text/plain POST needs no preflight) and DNS rebinding, as the MCP surface does by default.
+    app.use(async (c, next) => {
+      const host = c.req.header("host") ?? new URL(c.req.url).host;
+      const origin = c.req.header("origin");
+      if (!isLocalHost(host) || (origin !== undefined && !isLocalOrigin(origin))) {
+        throw new SyrinxError("forbidden", "SYRINX_LOCAL_BYPASS_AUTH only serves requests from this machine.");
+      }
+      await next();
+    });
+  }
+  if (requireAuth) {
+    // Only this surface's routes: hosts mount MCP and view assets on the same app, and those answer for themselves.
+    // Preflights carry no credentials; refusing them would break CORS for authenticated browser clients.
+    const gate = async (c: Context, next: () => Promise<void>) => {
+      if (c.req.method !== "OPTIONS") {
+        requestIdOf(c);
+        if (!(await principalOf(c))) throw new SyrinxError("unauthenticated", "Authentication required.");
+      }
+      await next();
+    };
+    // "/api/*" matches "/api" too.
+    for (const path of ["/openapi.json", "/api/*"]) app.use(path, gate);
+  }
+
   /** Per-request options shared by operations and resources: identity, tracing, request id. */
   const callOptions = async (c: Context): Promise<Call> => {
-    const requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
-    c.set(REQUEST_ID as never, requestId as never);
-    const principal = await options.authenticate?.(c.req.raw);
+    const requestId = requestIdOf(c);
+    const principal = await principalOf(c);
     const tenant = await options.resolveTenant?.(principal, c.req.raw);
     const call: Call = { surface: "rest", signal: c.req.raw.signal, requestId };
     if (principal) call.principal = principal;

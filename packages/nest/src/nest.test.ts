@@ -136,6 +136,63 @@ describe("request-state key", () => {
   });
 });
 
+describe("principals", () => {
+  it("authenticates demo tokens, and inherited names are not tokens", async () => {
+    @Module({
+      imports: [
+        SyrinxModule.forRoot({
+          apps: [greetings],
+          principals: { ok: { id: "u1", scopes: ["secret:read"] } },
+        }),
+      ],
+    })
+    // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- a Nest module is a class that only carries metadata
+    class DemoModule {}
+    const demo = await createSyrinxApp(DemoModule, { logger: false });
+    const demoServer = await listen(demo, 0);
+    try {
+      const url = `http://localhost:${(demoServer.address() as AddressInfo).port}/api/greetings/ops/secret`;
+      const post = (token: string) =>
+        fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+      expect((await post("ok")).status).toBe(200);
+      expect((await post("toString")).status).toBe(401);
+    } finally {
+      demoServer.close();
+      await demo.close();
+    }
+  });
+});
+
+describe("requireAuth", () => {
+  it("refuses anonymous callers on REST and MCP alike", async () => {
+    @Module({
+      imports: [
+        SyrinxModule.forRoot({
+          apps: [greetings],
+          requireAuth: true,
+          authenticate: (request) =>
+            request.headers.get("authorization") === "Bearer ok" ? { id: "u1", scopes: [] } : undefined,
+        }),
+      ],
+    })
+    // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- a Nest module is a class that only carries metadata
+    class StrictModule {}
+    const strict = await createSyrinxApp(StrictModule, { logger: false });
+    const strictServer = await listen(strict, 0);
+    try {
+      const url = (path: string) => `http://localhost:${(strictServer.address() as AddressInfo).port}${path}`;
+      expect((await fetch(url("/api/greetings/openapi.json"))).status).toBe(401);
+      expect((await fetch(url("/mcp"), { method: "POST", body: "{}" })).status).toBe(401);
+      expect(
+        (await fetch(url("/api/greetings/openapi.json"), { headers: { authorization: "Bearer ok" } })).status,
+      ).toBe(200);
+    } finally {
+      strictServer.close();
+      await strict.close();
+    }
+  });
+});
+
 describe("remoteApp", () => {
   it("calls another Syrinx app's operations and rethrows its failures as SyrinxErrors", async () => {
     const remote = remoteApp<typeof greetings>({ app: "greetings", base: `${base}/api` });

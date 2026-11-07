@@ -468,6 +468,32 @@ describe("endpoints and protection", () => {
     });
   });
 
+  it("serves callers without credentials as the local principal with SYRINX_LOCAL_BYPASS_AUTH", async () => {
+    vi.stubEnv("SYRINX_LOCAL_BYPASS_AUTH", "true");
+    try {
+      const { authenticate: _, ...anonymousOnly } = surfaceOptions;
+      const open = createMcpSurface({ ...anonymousOnly, requireAuth: true });
+      const response = await open.fetch(new Request("http://localhost/mcp", { method: "POST", body: "{}" }));
+      expect(response.status).not.toBe(401);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("requires auth by default in production, and refuses it without authenticate", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const strict = createMcpSurface({ ...surfaceOptions, authenticate: () => undefined, allowedHosts: false });
+      const response = await strict.fetch(new Request("http://localhost/mcp", { method: "POST", body: "{}" }));
+      expect(response.status).toBe(401);
+      const { authenticate: _, ...anonymousOnly } = surfaceOptions;
+      expect(() => createMcpSurface(anonymousOnly)).toThrow(/requireAuth is on \(the default/);
+      expect(() => createMcpSurface({ ...anonymousOnly, requireAuth: false })).not.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("warns about weak descriptions and rejects tool name collisions at startup", () => {
     const warnings: string[] = [];
     const logger: Logger = { ...noopLogger, warn: (m) => warnings.push(m) };

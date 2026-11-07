@@ -14,7 +14,7 @@ Most services now need two front doors: an HTTP API for programs and people, and
 - **Agents that ask before they act.** An operation can ask the caller to confirm (`confirm`) or for more input (`ctx.ask`) partway through. MCP clients see an elicitation; REST clients get an `input_required` result and resume with the answers. The pending state is sealed and signed, so the server stays stateless and a caller cannot tamper with it.
 - **UI that travels with the tools.** A view is a small Vue (or any framework) component bound to an operation's results. MCP Apps hosts render it inline in the chat; the same bundle works in an iframe or on your own page.
 - **Standards, not lock-in.** Schemas use [Standard Schema](https://standardschema.dev) (Zod, Valibot, ArkType). The REST surface uses problem+json errors and OpenAPI 3.1; the MCP surface uses the official TypeScript SDK and runs the official conformance suite. It runs on Node, Bun and Deno, standalone or inside NestJS.
-- **Safe defaults.** Writes can be retried with an `Idempotency-Key` and replay their first outcome. Tools are scoped by permission and hidden from callers who cannot use them. The MCP surface only accepts localhost hosts until you configure it.
+- **Safe defaults.** Writes can be retried with an `Idempotency-Key` and replay their first outcome. Tools are scoped by permission and hidden from callers who cannot use them. The MCP surface only accepts localhost hosts until you configure it. Under `NODE_ENV=production`, REST and MCP refuse anonymous callers, discovery included, unless you pass `requireAuth: false`.
 
 ## How it works
 
@@ -80,7 +80,7 @@ const invoices = defineApp({
 });
 
 const registry = createRegistry([invoices]);
-const app = createRestApp({ registry });
+const app = createRestApp({ registry }); // under NODE_ENV=production, pass authenticate (or requireAuth: false)
 // POST /api/invoices/ops/get {"id":"inv_1"}
 // -> {"resultType":"complete","data":{"id":"inv_1","totalCents":1200},"meta":{"requestId":"…"}}
 
@@ -169,6 +169,8 @@ pnpm test:e2e       # views in headless Chromium behind a real MCP Apps host pag
 ```
 
 Run the example app with `pnpm --filter @syrinx/example-invoices start` (after `pnpm build`; add `build:views` first to serve its views), then try `curl -H "Authorization: Bearer reader" localhost:3000/api/invoices/ops/list`, or point an MCP client at `http://localhost:3000/mcp` with the same bearer token.
+
+To try an app locally without tokens, start it with `SYRINX_LOCAL_BYPASS_AUTH=1`: every caller then acts as `local`, holding every scope the apps declare. It is refused under `NODE_ENV=production`.
 
 To see the views in VS Code, run `pnpm --filter @syrinx/example-invoices build:views`, then start the `syrinx-invoices` server from `.vscode/mcp.json` (stdio) and ask Copilot to list invoices. The gallery at `examples/invoices/dist/views/gallery.html` shows every view example at two widths without a host.
 

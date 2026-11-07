@@ -20,7 +20,9 @@ import {
   createRegistry,
   errorKinds,
   errors,
+  localAuthBypass,
   resolveRequestStateKey,
+  resolveRequireAuth,
   SyrinxError,
   type App,
   type Attributes,
@@ -66,6 +68,11 @@ export interface SyrinxModuleOptions {
    * authentication in with `authenticate`.
    */
   principals?: Record<string, Principal>;
+  /**
+   * Refuse anonymous callers on REST and MCP alike (401). Defaults to on under `NODE_ENV=production` and off otherwise;
+   * pass false to serve anonymous callers. On without `authenticate` or any `principals` refuses to start.
+   */
+  requireAuth?: boolean;
   /**
    * Encrypts the state of input round trips. Defaults to `SYRINX_REQUEST_STATE_KEY` (comma-separated, newest first, to
    * rotate); without either the host refuses to start under `NODE_ENV=production` and uses a development key otherwise.
@@ -162,18 +169,26 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
   async onApplicationBootstrap() {
     const { apps, views, requestStateKey, idempotency, logger = quietNestLogger() } = this.options;
     const deps: NestDeps = { nest: { get: (token) => this.moduleRef.get(token, { strict: false }) } };
-    const authenticate = this.authenticator();
-    const shells = views ? await this.shells(apps, views) : undefined;
+    const bypass = localAuthBypass(apps);
+    const authenticate = bypass ? () => bypass : this.authenticator();
+    // Auth and request-state key checks run before views build, so those mistakes fail fast and start no watcher.
     const registry = createRegistry(apps, {
       requestStateKey: resolveRequestStateKey(requestStateKey),
       ...(idempotency !== undefined ? { idempotency } : {}),
     });
-    const app = createRestApp({ registry, deps, authenticate, logger });
+    const { principals } = this.options;
+    const requireAuth = resolveRequireAuth(
+      this.options.requireAuth,
+      bypass !== undefined || this.options.authenticate !== undefined || Object.keys(principals ?? {}).length > 0,
+    );
+    const shells = views ? await this.shells(apps, views) : undefined;
+    const app = createRestApp({ registry, deps, authenticate, requireAuth, logger });
     const first = apps[0];
     const mcp = createMcpSurface({
       registry,
       deps,
       authenticate,
+      requireAuth,
       logger,
       name: this.options.name ?? first?.name ?? "syrinx",
       version: this.options.version ?? first?.version ?? "0.0.0",
@@ -190,12 +205,14 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
   }
 
   private authenticator() {
-    const { authenticate, principals = {} } = this.options;
+    const { authenticate, principals } = this.options;
     if (authenticate) return authenticate;
     return (request: Request): Principal | undefined => {
       const header = request.headers.get("authorization");
       if (!header) return undefined;
-      const principal = principals[header.replace(/^Bearer /, "")];
+      const token = header.replace(/^Bearer /, "");
+      // Own properties only, so `toString` and friends are not tokens.
+      const principal = principals && Object.hasOwn(principals, token) ? principals[token] : undefined;
       if (!principal) throw errors.unauthenticated("Unknown token.");
       return principal;
     };

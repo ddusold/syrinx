@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { Principal } from "./context.js";
-import { anonymousInDev, DEV_REQUEST_STATE_KEY, requestStateKeyFromEnv, resolveRequestStateKey } from "./dev.js";
+import {
+  anonymousInDev,
+  DEV_REQUEST_STATE_KEY,
+  localAuthBypass,
+  requestStateKeyFromEnv,
+  resolveRequestStateKey,
+  resolveRequireAuth,
+} from "./dev.js";
+import { defineApp, op, prompt, resource } from "./index.js";
 
 const viewer: Principal = { id: "viewer", scopes: ["people.read"] };
 const request = (headers: Record<string, string> = {}) => new Request("http://localhost/mcp", { headers });
@@ -86,5 +95,91 @@ describe("request-state key from the environment", () => {
       expect(() => resolveRequestStateKey(undefined)).toThrow(/set SYRINX_REQUEST_STATE_KEY/);
     });
     expect(() => resolveRequestStateKey(undefined, { production: true })).toThrow(/No request-state key/);
+  });
+});
+
+describe("resolveRequireAuth", () => {
+  it("follows the explicit setting, else NODE_ENV", () => {
+    expect(resolveRequireAuth(undefined, true, { production: false })).toBe(false);
+    expect(resolveRequireAuth(undefined, true, { production: true })).toBe(true);
+    expect(resolveRequireAuth(false, false, { production: true })).toBe(false);
+    expect(resolveRequireAuth(true, true, { production: false })).toBe(true);
+  });
+
+  it("refuses to require auth with nothing to authenticate", () => {
+    expect(() => resolveRequireAuth(undefined, false, { production: true })).toThrow(/default under NODE_ENV/);
+    expect(() => resolveRequireAuth(true, false)).toThrow(/no authenticate/);
+  });
+});
+
+describe("localAuthBypass", () => {
+  const notes = defineApp({
+    name: "notes",
+    version: "1",
+    description: "Notes.",
+    operations: {
+      write: op({
+        description: "Write a note.",
+        input: z.object({}),
+        output: z.object({}),
+        visibility: ["model", "rest"],
+        permissions: ["notes:write"],
+        handler: () => ({}),
+      }),
+      owned: op({
+        description: "A note its owner may read.",
+        input: z.object({}),
+        output: z.object({}),
+        annotations: { readOnly: true },
+        permissions: (principal) => principal.id === "owner",
+        handler: () => ({}),
+      }),
+    },
+    resources: {
+      note: resource({ uri: "note://{id}", output: z.object({}), permissions: ["notes:read"], read: () => ({}) }),
+    },
+    prompts: {
+      digest: prompt({ description: "Digest the notes.", permissions: ["notes:digest"], render: () => "Digest." }),
+    },
+  });
+  const withBypass = (value: string, run: () => void) => {
+    vi.stubEnv("SYRINX_LOCAL_BYPASS_AUTH", value);
+    try {
+      run();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  };
+
+  it("is off unless the variable is set", () => {
+    expect(localAuthBypass([notes])).toBeUndefined();
+    withBypass("0", () => {
+      expect(localAuthBypass([notes])).toBeUndefined();
+    });
+    withBypass("false", () => {
+      expect(localAuthBypass([notes])).toBeUndefined();
+    });
+  });
+
+  it("acts as a local principal holding every declared scope, and warns", () => {
+    for (const value of ["1", "true", "TRUE"]) {
+      withBypass(value, () => {
+        const warn = vi.fn();
+        expect(localAuthBypass([notes], { warn, production: false })).toEqual({
+          id: "local",
+          scopes: ["notes:digest", "notes:read", "notes:write"],
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("authentication is off"));
+      });
+    }
+  });
+
+  it("refuses production and values it does not understand", () => {
+    withBypass("1", () => {
+      expect(() => localAuthBypass([notes], { production: true })).toThrow(/not allowed in production/);
+    });
+    withBypass("yes", () => {
+      expect(() => localAuthBypass([notes])).toThrow(/must be 1, true, 0 or false/);
+    });
   });
 });

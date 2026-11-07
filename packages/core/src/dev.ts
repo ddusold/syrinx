@@ -1,3 +1,4 @@
+import type { App } from "./app.js";
 import type { Principal } from "./context.js";
 import type { Secret } from "./crypto.js";
 
@@ -45,6 +46,64 @@ export function anonymousInDev(
     }
     return principal;
   };
+}
+
+/** Set to `1` or `true` to run without authentication in development. Refused under `NODE_ENV=production`. */
+export const LOCAL_BYPASS_AUTH_ENV = "SYRINX_LOCAL_BYPASS_AUTH";
+
+/** The caller every request acts as while authentication is bypassed. */
+export const LOCAL_PRINCIPAL_ID = "local";
+
+let bypassWarned = false;
+
+/**
+ * The principal every caller acts as when `SYRINX_LOCAL_BYPASS_AUTH` is set: `local`, holding every scope the apps
+ * declare, so each operation, resource and prompt can be called without credentials (permission predicates still run).
+ * Undefined when it is unset. Throws under `NODE_ENV=production`, or for a value other than 1, true, 0 or false.
+ */
+export function localAuthBypass(apps: Iterable<App>, options: AnonymousInDevOptions = {}): Principal | undefined {
+  const value = (env()?.[LOCAL_BYPASS_AUTH_ENV] ?? "").trim().toLowerCase();
+  if (value === "" || value === "0" || value === "false") return undefined;
+  if (value !== "1" && value !== "true")
+    throw new Error(`${LOCAL_BYPASS_AUTH_ENV} must be 1, true, 0 or false; got "${value}".`);
+  if (options.production ?? isProduction())
+    throw new Error(`${LOCAL_BYPASS_AUTH_ENV} turns authentication off; it is not allowed in production. Unset it.`);
+  const scopes = new Set<string>();
+  for (const app of apps) {
+    for (const member of [
+      ...Object.values(app.operations),
+      ...Object.values(app.resources),
+      ...Object.values(app.prompts),
+    ] as { permissions?: unknown }[]) {
+      if (Array.isArray(member.permissions)) for (const scope of member.permissions as string[]) scopes.add(scope);
+    }
+  }
+  const message = `[syrinx] ${LOCAL_BYPASS_AUTH_ENV} is set: authentication is off and every caller acts as "${LOCAL_PRINCIPAL_ID}" with all scopes. Development only.`;
+  if (options.warn) options.warn(message);
+  else if (!bypassWarned) {
+    bypassWarned = true;
+    console.warn(message);
+  }
+  return Object.freeze({ id: LOCAL_PRINCIPAL_ID, scopes: Object.freeze([...scopes].sort()) });
+}
+
+export type ResolveRequireAuthOptions = Pick<AnonymousInDevOptions, "production">;
+
+/**
+ * Whether a surface refuses anonymous callers: `requireAuth` when given, else on under `NODE_ENV=production`. Throws
+ * when it is on but nothing can authenticate a caller, since every caller would then be refused.
+ */
+export function resolveRequireAuth(
+  requireAuth: boolean | undefined,
+  canAuthenticate: boolean,
+  options: ResolveRequireAuthOptions = {},
+): boolean {
+  const required = requireAuth ?? options.production ?? isProduction();
+  if (required && !canAuthenticate)
+    throw new Error(
+      `requireAuth is on${requireAuth === undefined ? " (the default under NODE_ENV=production)" : ""} but there is no authenticate, so every caller would be refused. Pass authenticate, or requireAuth: false to serve anonymous callers.`,
+    );
+  return required;
 }
 
 /** The environment variable `requestStateKey` is read from: one key, or several separated by commas, newest first. */

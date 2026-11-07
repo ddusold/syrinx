@@ -52,7 +52,8 @@ export const demoPrincipals: Record<string, Principal> = {
 function authenticate(request: Request): Principal | undefined {
   const header = request.headers.get("authorization");
   if (!header) return undefined;
-  const principal = demoPrincipals[header.replace(/^Bearer /, "")];
+  const token = header.replace(/^Bearer /, "");
+  const principal = Object.hasOwn(demoPrincipals, token) ? demoPrincipals[token] : undefined;
   if (!principal) throw errors.unauthenticated("Unknown token.");
   return principal;
 }
