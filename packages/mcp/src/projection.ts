@@ -236,7 +236,7 @@ function callOptions(
     canAsk,
   };
   if (options.deps !== undefined) call.deps = options.deps;
-  if (options.logger) call.logger = options.logger;
+  if (options.logger !== undefined) call.logger = options.logger;
   if (options.tracer) call.tracer = options.tracer;
   if (caller.principal) call.principal = caller.principal;
   if (caller.tenant) call.tenant = caller.tenant;
