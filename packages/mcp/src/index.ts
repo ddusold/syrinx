@@ -157,18 +157,17 @@ async function gzipped(request: Request, response: Response, method: string | un
  */
 export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const { registry } = options;
+  const logger = options.logger === false ? undefined : options.logger;
   const basePath = (options.basePath ?? "/mcp").replace(/\/$/, "");
   checkMembers(registry, "all");
   const withViews = [...registry.apps.values()].filter((a) => Object.keys(a.views).length).map((a) => a.name);
   if (withViews.length && !options.views) {
-    options.logger?.warn(
-      `MCP: apps ${withViews.join(", ")} declare views, but no view shells were given; serving without UI.`,
-    );
+    logger?.warn(`MCP: apps ${withViews.join(", ")} declare views, but no view shells were given; serving without UI.`);
   }
   for (const app of registry.apps.values()) {
     checkMembers(registry, { app: app.name });
     for (const warning of lintApp(app)) {
-      options.logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`, { target: warning.target });
+      logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`, { target: warning.target });
     }
   }
 
@@ -186,7 +185,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
         {
           legacy: options.legacy ?? "stateless",
           responseMode: "json",
-          onerror: (error) => options.logger?.warn("MCP request rejected", { error: String(error) }),
+          onerror: (error) => logger?.warn("MCP request rejected", { error: String(error) }),
         },
       );
       handlers.set(key, handler);

@@ -505,3 +505,74 @@ describe("endpoints and protection", () => {
     ]);
   });
 });
+
+describe("unhandled errors", () => {
+  const broken = defineApp({
+    name: "broken",
+    version: "1.0.0",
+    description: "Fails on purpose.",
+    operations: {
+      explode: op({
+        description: "Throw a plain error, to test how the surface reports it.",
+        input: z.object({}),
+        output: z.object({}),
+        annotations: { readOnly: true },
+        handler: () => {
+          throw new TypeError("boom");
+        },
+      }),
+    },
+  });
+  const explode = async (logger: Logger | false | undefined) => {
+    const brokenSurface = createMcpSurface({
+      registry: createRegistry([broken]),
+      name: "t",
+      version: "0",
+      ...(logger !== undefined ? { logger } : {}),
+    });
+    const client = new Client({ name: "mcp-test", version: "0.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("http://localhost/mcp"), {
+        fetch: (url, init) => brokenSurface.fetch(new Request(url, init)),
+      }),
+    );
+    clients.push(client);
+    return client.callTool({ name: "broken_explode", arguments: {} });
+  };
+
+  it("logs the cause and tool context, and tells the model only that something failed", async () => {
+    const entries: unknown[] = [];
+    const result = await explode({
+      ...noopLogger,
+      error: (message, attributes) => entries.push({ message, attributes }),
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).not.toContain("boom");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      message: "unhandled error",
+      attributes: {
+        "syrinx.surface": "mcp",
+        "syrinx.app": "broken",
+        "syrinx.operation": "explode",
+        "syrinx.request_id": expect.any(String) as string,
+        "error.type": "TypeError",
+        "error.message": "boom",
+        "error.stack": expect.stringContaining("TypeError: boom") as string,
+      },
+    });
+  });
+
+  it("falls back to console.error without a logger, and stays quiet with logger: false", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await explode(undefined);
+      expect(spy).toHaveBeenCalledWith("syrinx: unhandled error", expect.any(Object), expect.any(TypeError));
+      spy.mockClear();
+      await explode(false);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

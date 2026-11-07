@@ -6,6 +6,7 @@ import { getRequestListener } from "@hono/node-server";
 import {
   Inject,
   Injectable,
+  Logger as NestLogger,
   Module,
   type DynamicModule,
   type INestApplication,
@@ -22,9 +23,11 @@ import {
   resolveRequestStateKey,
   SyrinxError,
   type App,
+  type Attributes,
   type Context,
   type ErrorKind,
   type IdempotencyStore,
+  type Logger,
   type Principal,
   type Secret,
 } from "@syrinx/core";
@@ -73,12 +76,41 @@ export interface SyrinxModuleOptions {
    * instance runs, or `false` to stop deduplicating. Defaults to the memory store.
    */
   idempotency?: IdempotencyStore | false;
+  /**
+   * Receives operation logs, MCP warnings and unhandled errors. Defaults to Nest's logger, so it follows the app's
+   * logger settings; `false` drops them.
+   */
+  logger?: Logger | false;
   /** Reported to MCP clients; default to the first app's. */
   name?: string;
   version?: string;
 }
 
 export const SYRINX_OPTIONS = Symbol("SYRINX_OPTIONS");
+
+/** Syrinx's logger shape over Nest's, under the "Syrinx" context. */
+export function nestLogger(context = "Syrinx"): Logger {
+  const nest = new NestLogger(context);
+  const line = (message: string, attributes: Attributes = {}) =>
+    Object.keys(attributes).length ? `${message} ${JSON.stringify(attributes)}` : message;
+  return {
+    debug: (message, attributes) => {
+      nest.debug(line(message, attributes));
+    },
+    info: (message, attributes) => {
+      nest.log(line(message, attributes));
+    },
+    warn: (message, attributes) => {
+      nest.warn(line(message, attributes));
+    },
+    error: (message, attributes = {}) => {
+      // Nest prints a stack passed on its own beneath the message.
+      const { "error.stack": stack, ...rest } = attributes;
+      if (typeof stack === "string") nest.error(line(message, rest), stack);
+      else nest.error(line(message, rest));
+    },
+  };
+}
 
 const asPath = (value: string | URL) => (typeof value === "string" ? value : fileURLToPath(value));
 
@@ -125,7 +157,7 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
   }
 
   async onApplicationBootstrap() {
-    const { apps, views, requestStateKey, idempotency } = this.options;
+    const { apps, views, requestStateKey, idempotency, logger = nestLogger() } = this.options;
     const deps: NestDeps = { nest: { get: (token) => this.moduleRef.get(token, { strict: false }) } };
     const authenticate = this.authenticator();
     const shells = views ? await this.shells(apps, views) : undefined;
@@ -133,12 +165,13 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
       requestStateKey: resolveRequestStateKey(requestStateKey),
       ...(idempotency !== undefined ? { idempotency } : {}),
     });
-    const app = createRestApp({ registry, deps, authenticate });
+    const app = createRestApp({ registry, deps, authenticate, logger });
     const first = apps[0];
     const mcp = createMcpSurface({
       registry,
       deps,
       authenticate,
+      logger,
       name: this.options.name ?? first?.name ?? "syrinx",
       version: this.options.version ?? first?.version ?? "0.0.0",
       ...(shells ? { views: shells } : {}),

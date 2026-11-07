@@ -30,7 +30,7 @@ export { toMessages } from "./content.js";
 export type { ContentBlock, PromptContent, PromptMessage, RenderedPrompt } from "./content.js";
 export { lintApp } from "./lint.js";
 export type { LintWarning } from "./lint.js";
-export { anonymous, noopLogger, noopTracer, surfaces } from "./context.js";
+export { anonymous, logUnhandled, noopLogger, noopTracer, surfaces } from "./context.js";
 export {
   anonymousInDev,
   DEV_REQUEST_STATE_KEY,
