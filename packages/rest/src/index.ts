@@ -37,9 +37,9 @@ export interface RestOptions<Deps = unknown> {
     request: Request,
   ) => Tenant | undefined | Promise<Tenant | undefined>;
   /**
-   * Answer anonymous requests with 401 on every route but /healthz, including /openapi.json and the manifests. Defaults
-   * to on under `NODE_ENV=production` and off otherwise; pass false to serve anonymous callers. On without
-   * `authenticate` throws.
+   * Answer anonymous requests to /openapi.json and /api/* (the catalog, manifests and calls) with 401. CORS preflights,
+   * /healthz and routes a host adds to the app are not covered. Defaults to on under `NODE_ENV=production` and off
+   * otherwise; pass false to serve anonymous callers. On without `authenticate` throws.
    */
   requireAuth?: boolean;
   /**
@@ -114,7 +114,7 @@ const meta = (call: Call, replayed?: true) => {
 
 export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   const { registry } = options;
-  const requireAuth = resolveRequireAuth(options.requireAuth, options.authenticate);
+  const requireAuth = resolveRequireAuth(options.requireAuth, options.authenticate !== undefined);
   const app = new Hono();
   const etags = etag();
 
@@ -122,6 +122,15 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   app.notFound((c) => problem(c, new SyrinxError("not_found", `No route for ${c.req.method} ${c.req.path}.`)));
   // Reads get ETags so clients and caches can revalidate manifests, documents and resources cheaply.
   app.use(async (c, next) => (c.req.method === "GET" ? etags(c, next) : next()));
+
+  const requestIdOf = (c: Context): string => {
+    let requestId = c.get(REQUEST_ID as never) as string | undefined;
+    if (!requestId) {
+      requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
+      c.set(REQUEST_ID as never, requestId as never);
+    }
+    return requestId;
+  };
 
   /** The caller, authenticated once per request. */
   const principalOf = async (c: Context): Promise<Principal | undefined> => {
@@ -134,17 +143,21 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   };
   if (requireAuth) {
     // Only this surface's routes: hosts mount MCP and view assets on the same app, and those answer for themselves.
+    // Preflights carry no credentials; refusing them would break CORS for authenticated browser clients.
     const gate = async (c: Context, next: () => Promise<void>) => {
-      if (!(await principalOf(c))) throw new SyrinxError("unauthenticated", "Authentication required.");
+      if (c.req.method !== "OPTIONS") {
+        requestIdOf(c);
+        if (!(await principalOf(c))) throw new SyrinxError("unauthenticated", "Authentication required.");
+      }
       await next();
     };
-    for (const path of ["/openapi.json", "/api", "/api/*"]) app.use(path, gate);
+    // "/api/*" matches "/api" too.
+    for (const path of ["/openapi.json", "/api/*"]) app.use(path, gate);
   }
 
   /** Per-request options shared by operations and resources: identity, tracing, request id. */
   const callOptions = async (c: Context): Promise<Call> => {
-    const requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
-    c.set(REQUEST_ID as never, requestId as never);
+    const requestId = requestIdOf(c);
     const principal = await principalOf(c);
     const tenant = await options.resolveTenant?.(principal, c.req.raw);
     const call: Call = { surface: "rest", signal: c.req.raw.signal, requestId };

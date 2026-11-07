@@ -173,7 +173,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const { registry } = options;
   const logger = routineLogger(options);
   const basePath = (options.basePath ?? "/mcp").replace(/\/$/, "");
-  const requireAuth = resolveRequireAuth(options.requireAuth, options.authenticate);
+  const requireAuth = resolveRequireAuth(options.requireAuth, options.authenticate !== undefined);
   checkMembers(registry, "all");
   const withViews = [...registry.apps.values()].filter((a) => Object.keys(a.views).length).map((a) => a.name);
   if (withViews.length && !options.views) {

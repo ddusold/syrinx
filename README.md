@@ -80,7 +80,7 @@ const invoices = defineApp({
 });
 
 const registry = createRegistry([invoices]);
-const app = createRestApp({ registry });
+const app = createRestApp({ registry }); // under NODE_ENV=production, pass authenticate (or requireAuth: false)
 // POST /api/invoices/ops/get {"id":"inv_1"}
 // -> {"resultType":"complete","data":{"id":"inv_1","totalCents":1200},"meta":{"requestId":"…"}}
 

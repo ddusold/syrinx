@@ -75,15 +75,15 @@ export type ResolveRequireAuthOptions = Pick<AnonymousInDevOptions, "production"
 
 /**
  * Whether a surface refuses anonymous callers: `requireAuth` when given, else on under `NODE_ENV=production`. Throws
- * when it is on but there is no `authenticate`, since every caller would then be refused.
+ * when it is on but nothing can authenticate a caller, since every caller would then be refused.
  */
 export function resolveRequireAuth(
   requireAuth: boolean | undefined,
-  authenticate: unknown,
+  canAuthenticate: boolean,
   options: ResolveRequireAuthOptions = {},
 ): boolean {
   const required = requireAuth ?? options.production ?? isProduction();
-  if (required && !authenticate)
+  if (required && !canAuthenticate)
     throw new Error(
       `requireAuth is on${requireAuth === undefined ? " (the default under NODE_ENV=production)" : ""} but there is no authenticate, so every caller would be refused. Pass authenticate, or requireAuth: false to serve anonymous callers.`,
     );

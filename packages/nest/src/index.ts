@@ -69,8 +69,8 @@ export interface SyrinxModuleOptions {
    */
   principals?: Record<string, Principal>;
   /**
-   * Refuse anonymous callers on REST and MCP alike (401, except /healthz). Defaults to on under `NODE_ENV=production`
-   * and off otherwise; pass false to serve anonymous callers. On without `authenticate` or `principals` refuses to start.
+   * Refuse anonymous callers on REST and MCP alike (401). Defaults to on under `NODE_ENV=production` and off otherwise;
+   * pass false to serve anonymous callers. On without `authenticate` or any `principals` refuses to start.
    */
   requireAuth?: boolean;
   /**
@@ -170,15 +170,17 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
     const { apps, views, requestStateKey, idempotency, logger = quietNestLogger() } = this.options;
     const deps: NestDeps = { nest: { get: (token) => this.moduleRef.get(token, { strict: false }) } };
     const authenticate = this.authenticator();
-    const shells = views ? await this.shells(apps, views) : undefined;
+    // Configuration checks run before views build, so a bad config fails fast and leaves no watcher behind.
     const registry = createRegistry(apps, {
       requestStateKey: resolveRequestStateKey(requestStateKey),
       ...(idempotency !== undefined ? { idempotency } : {}),
     });
+    const { principals } = this.options;
     const requireAuth = resolveRequireAuth(
       this.options.requireAuth,
-      this.options.authenticate ?? this.options.principals,
+      this.options.authenticate !== undefined || Object.keys(principals ?? {}).length > 0,
     );
+    const shells = views ? await this.shells(apps, views) : undefined;
     const app = createRestApp({ registry, deps, authenticate, requireAuth, logger });
     const first = apps[0];
     const mcp = createMcpSurface({

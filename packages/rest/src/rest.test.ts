@@ -282,6 +282,9 @@ describe("authentication and tenants", () => {
     }
     expect((await strict.request("/healthz")).status).toBe(200);
     expect((await strict.request("/mcp")).status).toBe(200);
+    expect((await strict.request("/api/invoices/ops/whoami", { method: "OPTIONS" })).status).not.toBe(401);
+    const refused = await strict.request("/api", { headers: { "x-request-id": "req_9" } });
+    expect(await json(refused)).toMatchObject({ requestId: "req_9" });
     authenticate.mockClear();
     const res = await strict.request("/api/invoices/ops/whoami", { headers: { authorization: "Bearer good" } });
     expect(await json(res)).toMatchObject({ data: { principal: "user_1" } });
