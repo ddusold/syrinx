@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { Principal } from "./context.js";
 import {
   anonymousInDev,
   DEV_REQUEST_STATE_KEY,
-  devTokens,
+  localAuthBypass,
   requestStateKeyFromEnv,
   resolveRequestStateKey,
   resolveRequireAuth,
 } from "./dev.js";
+import { defineApp, op, prompt, resource } from "./index.js";
 
 const viewer: Principal = { id: "viewer", scopes: ["people.read"] };
 const request = (headers: Record<string, string> = {}) => new Request("http://localhost/mcp", { headers });
@@ -46,43 +48,6 @@ describe("anonymousInDev", () => {
     vi.stubEnv("NODE_ENV", "production");
     try {
       expect(() => anonymousInDev(() => undefined, viewer)).toThrow(/not allowed in production/);
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-});
-
-describe("devTokens", () => {
-  const authenticate = devTokens({ viewer }, { production: false });
-  const bearer = (value: string) => request({ authorization: value });
-
-  it("maps a bearer token to its principal, and treats no header as anonymous", async () => {
-    expect(await authenticate(bearer("Bearer viewer"))).toBe(viewer);
-    expect(await authenticate(bearer("bearer  viewer"))).toBe(viewer);
-    expect(await authenticate(request())).toBeUndefined();
-    expect(await authenticate(bearer(""))).toBeUndefined();
-  });
-
-  it("reads tokens added after creation", async () => {
-    const tokens: Record<string, Principal> = {};
-    const late = devTokens(tokens, { production: false });
-    tokens.viewer = viewer;
-    expect(await late(bearer("Bearer viewer"))).toBe(viewer);
-  });
-
-  it("refuses unknown tokens, other schemes and inherited property names", () => {
-    for (const header of ["Bearer nope", "viewer", "Basic viewer", "Bearer ", "Bearer toString", "Bearer __proto__"]) {
-      expect(() => authenticate(bearer(header)), header).toThrow(
-        expect.objectContaining({ kind: "unauthenticated" }) as Error,
-      );
-    }
-  });
-
-  it("refuses to be created in production", () => {
-    expect(() => devTokens({ viewer }, { production: true })).toThrow(/not allowed in production/);
-    vi.stubEnv("NODE_ENV", "production");
-    try {
-      expect(() => devTokens({ viewer })).toThrow(/not allowed in production/);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -144,5 +109,77 @@ describe("resolveRequireAuth", () => {
   it("refuses to require auth with nothing to authenticate", () => {
     expect(() => resolveRequireAuth(undefined, false, { production: true })).toThrow(/default under NODE_ENV/);
     expect(() => resolveRequireAuth(true, false)).toThrow(/no authenticate/);
+  });
+});
+
+describe("localAuthBypass", () => {
+  const notes = defineApp({
+    name: "notes",
+    version: "1",
+    description: "Notes.",
+    operations: {
+      write: op({
+        description: "Write a note.",
+        input: z.object({}),
+        output: z.object({}),
+        visibility: ["model", "rest"],
+        permissions: ["notes:write"],
+        handler: () => ({}),
+      }),
+      owned: op({
+        description: "A note its owner may read.",
+        input: z.object({}),
+        output: z.object({}),
+        annotations: { readOnly: true },
+        permissions: (principal) => principal.id === "owner",
+        handler: () => ({}),
+      }),
+    },
+    resources: {
+      note: resource({ uri: "note://{id}", output: z.object({}), permissions: ["notes:read"], read: () => ({}) }),
+    },
+    prompts: {
+      digest: prompt({ description: "Digest the notes.", permissions: ["notes:digest"], render: () => "Digest." }),
+    },
+  });
+  const withBypass = (value: string, run: () => void) => {
+    vi.stubEnv("SYRINX_LOCAL_BYPASS_AUTH", value);
+    try {
+      run();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  };
+
+  it("is off unless the variable is set", () => {
+    expect(localAuthBypass([notes])).toBeUndefined();
+    withBypass("0", () => {
+      expect(localAuthBypass([notes])).toBeUndefined();
+    });
+    withBypass("false", () => {
+      expect(localAuthBypass([notes])).toBeUndefined();
+    });
+  });
+
+  it("acts as a local principal holding every declared scope, and warns", () => {
+    for (const value of ["1", "true", "TRUE"]) {
+      withBypass(value, () => {
+        const warn = vi.fn();
+        expect(localAuthBypass([notes], { warn, production: false })).toEqual({
+          id: "local",
+          scopes: ["notes:digest", "notes:read", "notes:write"],
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("authentication is off"));
+      });
+    }
+  });
+
+  it("refuses production and values it does not understand", () => {
+    withBypass("1", () => {
+      expect(() => localAuthBypass([notes], { production: true })).toThrow(/not allowed in production/);
+    });
+    withBypass("yes", () => {
+      expect(() => localAuthBypass([notes])).toThrow(/must be 1, true, 0 or false/);
+    });
   });
 });

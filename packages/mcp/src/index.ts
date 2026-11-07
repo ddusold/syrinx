@@ -1,4 +1,12 @@
-import { lintApp, logUnhandled, resolveRequireAuth, SyrinxError, type Principal, type Tenant } from "@syrinx/core";
+import {
+  lintApp,
+  localAuthBypass,
+  logUnhandled,
+  resolveRequireAuth,
+  SyrinxError,
+  type Principal,
+  type Tenant,
+} from "@syrinx/core";
 import {
   createMcpHandler,
   getOAuthProtectedResourceMetadataUrl,
@@ -173,7 +181,9 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const { registry } = options;
   const logger = routineLogger(options);
   const basePath = (options.basePath ?? "/mcp").replace(/\/$/, "");
-  const requireAuth = resolveRequireAuth(options.requireAuth, options.authenticate !== undefined);
+  const bypass = localAuthBypass(registry.apps.values());
+  const authenticate = bypass ? () => bypass : options.authenticate;
+  const requireAuth = resolveRequireAuth(options.requireAuth, authenticate !== undefined);
   checkMembers(registry, "all");
   const withViews = [...registry.apps.values()].filter((a) => Object.keys(a.views).length).map((a) => a.name);
   if (withViews.length && !options.views) {
@@ -246,7 +256,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
       let principal: Principal | undefined;
       let tenant: Tenant | undefined;
       try {
-        principal = await options.authenticate?.(request);
+        principal = await authenticate?.(request);
         if (!principal && requireAuth) {
           return jsonRpcError(401, "Authentication required.", { "www-authenticate": challenge });
         }

@@ -10,7 +10,7 @@ import { createInvoicesHost } from "../src/host.js";
 const here = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 const port = Number(process.env.PORT ?? 4319);
 
-// Vite's build sets NODE_ENV to production when it is unset; put it back, or the host refuses the dev request-state key and demo tokens.
+// Vite's build sets NODE_ENV to production when it is unset; put it back, or the host refuses the dev request-state key.
 const nodeEnv = process.env.NODE_ENV;
 await build({
   configFile: false,

@@ -137,7 +137,7 @@ describe("request-state key", () => {
 });
 
 describe("principals", () => {
-  it("authenticates demo tokens through devTokens, so inherited names are not tokens", async () => {
+  it("authenticates demo tokens, and inherited names are not tokens", async () => {
     @Module({
       imports: [
         SyrinxModule.forRoot({
@@ -159,20 +159,6 @@ describe("principals", () => {
     } finally {
       demoServer.close();
       await demo.close();
-    }
-  });
-
-  it("refuses to start in production", async () => {
-    @Module({ imports: [SyrinxModule.forRoot({ apps: [greetings], principals: {}, requestStateKey: "k".repeat(32) })] })
-    // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- a Nest module is a class that only carries metadata
-    class DemoModule {}
-    vi.stubEnv("NODE_ENV", "production");
-    const demo = await createSyrinxApp(DemoModule, { logger: false });
-    try {
-      await expect(demo.init()).rejects.toThrow(/devTokens/);
-    } finally {
-      await demo.close();
-      vi.unstubAllEnvs();
     }
   });
 });

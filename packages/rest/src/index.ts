@@ -1,5 +1,6 @@
 import {
   isVisible,
+  localAuthBypass,
   logUnhandled,
   matchUriTemplate,
   resolveRequireAuth,
@@ -114,7 +115,9 @@ const meta = (call: Call, replayed?: true) => {
 
 export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   const { registry } = options;
-  const requireAuth = resolveRequireAuth(options.requireAuth, options.authenticate !== undefined);
+  const bypass = localAuthBypass(registry.apps.values());
+  const authenticate = bypass ? () => bypass : options.authenticate;
+  const requireAuth = resolveRequireAuth(options.requireAuth, authenticate !== undefined);
   const app = new Hono();
   const etags = etag();
 
@@ -136,7 +139,7 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   const principalOf = async (c: Context): Promise<Principal | undefined> => {
     let found = c.get(PRINCIPAL as never) as { principal: Principal | undefined } | undefined;
     if (!found) {
-      found = { principal: await options.authenticate?.(c.req.raw) };
+      found = { principal: await authenticate?.(c.req.raw) };
       c.set(PRINCIPAL as never, found as never);
     }
     return found.principal;

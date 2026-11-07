@@ -1,6 +1,6 @@
+import type { App } from "./app.js";
 import type { Principal } from "./context.js";
 import type { Secret } from "./crypto.js";
-import { errors } from "./errors.js";
 
 // Core carries no Node types; this also holds on runtimes without `process`.
 const env = () => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
@@ -48,27 +48,43 @@ export function anonymousInDev(
   };
 }
 
-export interface DevTokensOptions {
-  /** Overrides the production check, for tests. Defaults to `NODE_ENV === "production"`. */
-  production?: boolean;
-}
+/** Set to `1` or `true` to run without authentication in development. Refused under `NODE_ENV=production`. */
+export const LOCAL_BYPASS_AUTH_ENV = "SYRINX_LOCAL_BYPASS_AUTH";
+
+/** The caller every request acts as while authentication is bypassed. */
+export const LOCAL_PRINCIPAL_ID = "local";
+
+let bypassWarned = false;
 
 /**
- * Development only: authenticates `Authorization: Bearer <token>` against a fixed token → principal map, for demos and
- * tests. No header (or an empty one) is anonymous; any other header, or an unknown token, is refused. Throws at creation when `NODE_ENV`
- * is `production`, since the tokens live in source.
+ * The principal every caller acts as when `SYRINX_LOCAL_BYPASS_AUTH` is set: `local`, holding every scope the apps
+ * declare, so each operation, resource and prompt can be called without credentials (permission predicates still run).
+ * Undefined when it is unset. Throws under `NODE_ENV=production`, or for a value other than 1, true, 0 or false.
  */
-export function devTokens(tokens: Readonly<Record<string, Principal>>, options: DevTokensOptions = {}): Authenticate {
+export function localAuthBypass(apps: Iterable<App>, options: AnonymousInDevOptions = {}): Principal | undefined {
+  const value = (env()?.[LOCAL_BYPASS_AUTH_ENV] ?? "").trim().toLowerCase();
+  if (value === "" || value === "0" || value === "false") return undefined;
+  if (value !== "1" && value !== "true")
+    throw new Error(`${LOCAL_BYPASS_AUTH_ENV} must be 1, true, 0 or false; got "${value}".`);
   if (options.production ?? isProduction())
-    throw new Error("devTokens authenticates with tokens kept in source; it is not allowed in production.");
-  return (request) => {
-    const header = request.headers.get("authorization");
-    if (!header) return undefined;
-    const token = /^Bearer\s+(\S+)\s*$/i.exec(header)?.[1];
-    // Own properties only, so `toString` and friends are not tokens.
-    if (token === undefined || !Object.hasOwn(tokens, token)) throw errors.unauthenticated("Unknown token.");
-    return tokens[token];
-  };
+    throw new Error(`${LOCAL_BYPASS_AUTH_ENV} turns authentication off; it is not allowed in production. Unset it.`);
+  const scopes = new Set<string>();
+  for (const app of apps) {
+    for (const member of [
+      ...Object.values(app.operations),
+      ...Object.values(app.resources),
+      ...Object.values(app.prompts),
+    ] as { permissions?: unknown }[]) {
+      if (Array.isArray(member.permissions)) for (const scope of member.permissions as string[]) scopes.add(scope);
+    }
+  }
+  const message = `[syrinx] ${LOCAL_BYPASS_AUTH_ENV} is set: authentication is off and every caller acts as "${LOCAL_PRINCIPAL_ID}" with all scopes. Development only.`;
+  if (options.warn) options.warn(message);
+  else if (!bypassWarned) {
+    bypassWarned = true;
+    console.warn(message);
+  }
+  return Object.freeze({ id: LOCAL_PRINCIPAL_ID, scopes: Object.freeze([...scopes].sort()) });
 }
 
 export type ResolveRequireAuthOptions = Pick<AnonymousInDevOptions, "production">;

@@ -18,9 +18,9 @@ import { ModuleRef, NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import {
   createRegistry,
-  devTokens,
   errorKinds,
   errors,
+  localAuthBypass,
   resolveRequestStateKey,
   resolveRequireAuth,
   SyrinxError,
@@ -64,8 +64,8 @@ export interface SyrinxModuleOptions {
   /** Who is calling. Return undefined for an anonymous request, or throw `errors.unauthenticated`. */
   authenticate?: (request: Request) => Principal | undefined | Promise<Principal | undefined>;
   /**
-   * Bearer token to principal, for demos and tests, through core's `devTokens`: the app refuses to start with it under
-   * `NODE_ENV=production`. Ignored when `authenticate` is set, which is where a real app plugs its own authentication in.
+   * Bearer token to principal, for demos and tests; ignored when `authenticate` is set. A real app plugs its own
+   * authentication in with `authenticate`.
    */
   principals?: Record<string, Principal>;
   /**
@@ -169,7 +169,8 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
   async onApplicationBootstrap() {
     const { apps, views, requestStateKey, idempotency, logger = quietNestLogger() } = this.options;
     const deps: NestDeps = { nest: { get: (token) => this.moduleRef.get(token, { strict: false }) } };
-    const authenticate = this.authenticator();
+    const bypass = localAuthBypass(apps);
+    const authenticate = bypass ? () => bypass : this.authenticator();
     // Configuration checks run before views build, so a bad config fails fast and leaves no watcher behind.
     const registry = createRegistry(apps, {
       requestStateKey: resolveRequestStateKey(requestStateKey),
@@ -178,7 +179,7 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
     const { principals } = this.options;
     const requireAuth = resolveRequireAuth(
       this.options.requireAuth,
-      this.options.authenticate !== undefined || Object.keys(principals ?? {}).length > 0,
+      bypass !== undefined || this.options.authenticate !== undefined || Object.keys(principals ?? {}).length > 0,
     );
     const shells = views ? await this.shells(apps, views) : undefined;
     const app = createRestApp({ registry, deps, authenticate, requireAuth, logger });
@@ -206,9 +207,13 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
   private authenticator() {
     const { authenticate, principals } = this.options;
     if (authenticate) return authenticate;
-    if (principals) return devTokens(principals);
-    return (request: Request): undefined => {
-      if (request.headers.get("authorization")) throw errors.unauthenticated("Unknown token.");
+    return (request: Request): Principal | undefined => {
+      const header = request.headers.get("authorization");
+      if (!header) return undefined;
+      const token = header.replace(/^Bearer /, "");
+      // Own properties only, so `toString` and friends are not tokens.
+      if (!principals || !Object.hasOwn(principals, token)) throw errors.unauthenticated("Unknown token.");
+      return principals[token];
     };
   }
 

@@ -291,6 +291,20 @@ describe("authentication and tenants", () => {
     expect(authenticate).toHaveBeenCalledOnce();
   });
 
+  it("lets every caller through as the local principal with SYRINX_LOCAL_BYPASS_AUTH", async () => {
+    vi.stubEnv("SYRINX_LOCAL_BYPASS_AUTH", "1");
+    try {
+      const open = createRestApp({ registry, requireAuth: true });
+      expect(await json(await open.request("/api/invoices/ops/whoami"))).toMatchObject({
+        data: { principal: "local" },
+      });
+      vi.stubEnv("NODE_ENV", "production");
+      expect(() => createRestApp({ registry, requireAuth: false })).toThrow(/not allowed in production/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("defaults requireAuth on in production, and refuses it without authenticate", () => {
     vi.stubEnv("NODE_ENV", "production");
     try {

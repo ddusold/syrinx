@@ -468,6 +468,18 @@ describe("endpoints and protection", () => {
     });
   });
 
+  it("serves callers without credentials as the local principal with SYRINX_LOCAL_BYPASS_AUTH", async () => {
+    vi.stubEnv("SYRINX_LOCAL_BYPASS_AUTH", "true");
+    try {
+      const { authenticate: _, ...anonymousOnly } = surfaceOptions;
+      const open = createMcpSurface({ ...anonymousOnly, requireAuth: true });
+      const response = await open.fetch(new Request("http://localhost/mcp", { method: "POST", body: "{}" }));
+      expect(response.status).not.toBe(401);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("requires auth by default in production, and refuses it without authenticate", async () => {
     vi.stubEnv("NODE_ENV", "production");
     try {

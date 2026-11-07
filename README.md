@@ -170,6 +170,8 @@ pnpm test:e2e       # views in headless Chromium behind a real MCP Apps host pag
 
 Run the example app with `pnpm --filter @syrinx/example-invoices start` (after `pnpm build`; add `build:views` first to serve its views), then try `curl -H "Authorization: Bearer reader" localhost:3000/api/invoices/ops/list`, or point an MCP client at `http://localhost:3000/mcp` with the same bearer token.
 
+To try an app locally without tokens, start it with `SYRINX_LOCAL_BYPASS_AUTH=1`: every caller then acts as `local`, holding every scope the apps declare. It is refused under `NODE_ENV=production`.
+
 To see the views in VS Code, run `pnpm --filter @syrinx/example-invoices build:views`, then start the `syrinx-invoices` server from `.vscode/mcp.json` (stdio) and ask Copilot to list invoices. The gallery at `examples/invoices/dist/views/gallery.html` shows every view example at two widths without a host.
 
 `examples/conformance` holds the fixtures the official MCP conformance suite calls. Start it with `pnpm --filter @syrinx/example-conformance start`, then run `pnpm conformance`; `examples/conformance/expected-failures.yaml` lists the required scenarios Syrinx does not pass yet, and why.
