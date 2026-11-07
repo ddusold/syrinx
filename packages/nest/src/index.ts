@@ -77,8 +77,8 @@ export interface SyrinxModuleOptions {
    */
   idempotency?: IdempotencyStore | false;
   /**
-   * Receives operation logs, MCP warnings and unhandled errors. Defaults to Nest's logger, so it follows the app's
-   * logger settings; `false` drops them.
+   * Receives operation logs, MCP warnings and internal errors. Defaults to Nest's logger for warnings and errors only,
+   * so they follow the app's logger settings; pass `nestLogger()` for debug and info lines too, or `false` to drop all.
    */
   logger?: Logger | false;
   /** Reported to MCP clients; default to the first app's. */
@@ -111,6 +111,9 @@ export function nestLogger(context = "Syrinx"): Logger {
     },
   };
 }
+
+/** Nest prints debug lines by default; without this, every MCP tool call would land in the app's console. */
+const quietNestLogger = (): Logger => ({ ...nestLogger(), debug: () => undefined, info: () => undefined });
 
 const asPath = (value: string | URL) => (typeof value === "string" ? value : fileURLToPath(value));
 
@@ -157,7 +160,7 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
   }
 
   async onApplicationBootstrap() {
-    const { apps, views, requestStateKey, idempotency, logger = nestLogger() } = this.options;
+    const { apps, views, requestStateKey, idempotency, logger = quietNestLogger() } = this.options;
     const deps: NestDeps = { nest: { get: (token) => this.moduleRef.get(token, { strict: false }) } };
     const authenticate = this.authenticator();
     const shells = views ? await this.shells(apps, views) : undefined;

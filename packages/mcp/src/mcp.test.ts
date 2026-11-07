@@ -563,6 +563,31 @@ describe("unhandled errors", () => {
     });
   });
 
+  it("logs a failing authenticate and answers with a JSON-RPC internal error", async () => {
+    const entries: unknown[] = [];
+    const failing = createMcpSurface({
+      registry: createRegistry([broken]),
+      name: "t",
+      version: "0",
+      logger: { ...noopLogger, error: (message, attributes) => entries.push({ message, attributes }) },
+      authenticate: () => {
+        throw new Error("auth backend down");
+      },
+    });
+    const res = await failing.fetch(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ error: { code: -32603, message: "Internal error" } });
+    expect(entries).toMatchObject([
+      { attributes: { "syrinx.surface": "mcp", "url.path": "/mcp", "error.message": "auth backend down" } },
+    ]);
+  });
+
   it("falls back to console.error without a logger, and stays quiet with logger: false", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {

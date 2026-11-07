@@ -305,6 +305,13 @@ describe("unhandled errors", () => {
           throw new TypeError("boom");
         },
       }),
+      misshape: op({
+        description: "Return output that breaks its schema.",
+        input: z.object({}),
+        output: z.object({ id: z.string() }),
+        annotations: { readOnly: true },
+        handler: () => ({ id: 1 }) as unknown as { id: string },
+      }),
       refuse: op({
         description: "Throw a Syrinx error.",
         input: z.object({}),
@@ -364,6 +371,12 @@ describe("unhandled errors", () => {
       "error.message": "auth backend down",
       "syrinx.request_id": "req_9",
     });
+  });
+
+  it("logs internal Syrinx errors, which are server bugs too", async () => {
+    const { entries, logger } = capture();
+    expect((await call(logger, "/api/broken/ops/misshape")).status).toBe(500);
+    expect(entries[0]?.attributes).toMatchObject({ "syrinx.operation": "misshape", "error.type": "SyrinxError" });
   });
 
   it("does not log Syrinx errors, which the client already sees", async () => {

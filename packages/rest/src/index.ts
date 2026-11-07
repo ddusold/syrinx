@@ -35,7 +35,10 @@ export interface RestOptions<Deps = unknown> {
     principal: Principal | undefined,
     request: Request,
   ) => Tenant | undefined | Promise<Tenant | undefined>;
-  /** Receives operation logs and unhandled errors. Defaults to console.error for unhandled errors only; `false` drops them. */
+  /**
+   * Receives operation logs and internal errors (the ones callers see only as an internal error). Without it, internal
+   * errors still go to console.error; `false` drops them.
+   */
   logger?: Logger | false;
   tracer?: Tracer;
   /** Served at /openapi.json and /api/{app}/openapi.json. */
@@ -52,13 +55,14 @@ const REQUEST_ID = "syrinx.requestId";
 
 function problem(c: Context, error: unknown, logger?: Logger | false) {
   const requestId = c.get(REQUEST_ID as never) as string | undefined;
-  if (!(error instanceof SyrinxError)) {
-    const { app, op } = c.req.param() as { app?: string; op?: string };
+  if (!(error instanceof SyrinxError) || error.kind === "internal") {
+    const { app, op, prompt } = c.req.param() as { app?: string; op?: string; prompt?: string };
     logUnhandled(logger, error, {
       "syrinx.surface": "rest",
       "syrinx.request_id": requestId,
       "syrinx.app": app,
       "syrinx.operation": op,
+      "syrinx.prompt": prompt,
       "http.request.method": c.req.method,
       "url.path": c.req.path,
     });
