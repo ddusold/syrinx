@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Principal } from "./context.js";
-import { anonymousInDev, DEV_REQUEST_STATE_KEY, requestStateKeyFromEnv, resolveRequestStateKey } from "./dev.js";
+import {
+  anonymousInDev,
+  DEV_REQUEST_STATE_KEY,
+  devTokens,
+  requestStateKeyFromEnv,
+  resolveRequestStateKey,
+} from "./dev.js";
 
 const viewer: Principal = { id: "viewer", scopes: ["people.read"] };
 const request = (headers: Record<string, string> = {}) => new Request("http://localhost/mcp", { headers });
@@ -39,6 +45,35 @@ describe("anonymousInDev", () => {
     vi.stubEnv("NODE_ENV", "production");
     try {
       expect(() => anonymousInDev(() => undefined, viewer)).toThrow(/not allowed in production/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("devTokens", () => {
+  const authenticate = devTokens({ viewer }, { production: false });
+  const bearer = (value: string) => request({ authorization: value });
+
+  it("maps a bearer token to its principal, and treats no header as anonymous", async () => {
+    expect(await authenticate(bearer("Bearer viewer"))).toBe(viewer);
+    expect(await authenticate(bearer("bearer  viewer"))).toBe(viewer);
+    expect(await authenticate(request())).toBeUndefined();
+  });
+
+  it("refuses unknown tokens, other schemes and inherited property names", () => {
+    for (const header of ["Bearer nope", "viewer", "Basic viewer", "Bearer ", "Bearer toString", "Bearer __proto__"]) {
+      expect(() => authenticate(bearer(header)), header).toThrow(
+        expect.objectContaining({ kind: "unauthenticated" }) as Error,
+      );
+    }
+  });
+
+  it("refuses to be created in production", () => {
+    expect(() => devTokens({ viewer }, { production: true })).toThrow(/not allowed in production/);
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      expect(() => devTokens({ viewer })).toThrow(/not allowed in production/);
     } finally {
       vi.unstubAllEnvs();
     }

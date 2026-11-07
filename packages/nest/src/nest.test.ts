@@ -136,6 +136,47 @@ describe("request-state key", () => {
   });
 });
 
+describe("principals", () => {
+  it("authenticates demo tokens through devTokens, so inherited names are not tokens", async () => {
+    @Module({
+      imports: [
+        SyrinxModule.forRoot({
+          apps: [greetings],
+          principals: { ok: { id: "u1", scopes: ["secret:read"] } },
+        }),
+      ],
+    })
+    // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- a Nest module is a class that only carries metadata
+    class DemoModule {}
+    const demo = await createSyrinxApp(DemoModule, { logger: false });
+    const demoServer = await listen(demo, 0);
+    try {
+      const url = `http://localhost:${(demoServer.address() as AddressInfo).port}/api/greetings/ops/secret`;
+      const post = (token: string) =>
+        fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" });
+      expect((await post("ok")).status).toBe(200);
+      expect((await post("toString")).status).toBe(401);
+    } finally {
+      demoServer.close();
+      await demo.close();
+    }
+  });
+
+  it("refuses to start in production", async () => {
+    @Module({ imports: [SyrinxModule.forRoot({ apps: [greetings], principals: {}, requestStateKey: "k".repeat(32) })] })
+    // eslint-disable-next-line @typescript-eslint/no-extraneous-class -- a Nest module is a class that only carries metadata
+    class DemoModule {}
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const demo = await createSyrinxApp(DemoModule, { logger: false });
+      await expect(demo.init()).rejects.toThrow(/devTokens/);
+      await demo.close();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe("remoteApp", () => {
   it("calls another Syrinx app's operations and rethrows its failures as SyrinxErrors", async () => {
     const remote = remoteApp<typeof greetings>({ app: "greetings", base: `${base}/api` });

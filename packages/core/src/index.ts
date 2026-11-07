@@ -34,11 +34,12 @@ export { anonymous, logUnhandled, noopLogger, noopTracer, surfaces } from "./con
 export {
   anonymousInDev,
   DEV_REQUEST_STATE_KEY,
+  devTokens,
   REQUEST_STATE_KEY_ENV,
   requestStateKeyFromEnv,
   resolveRequestStateKey,
 } from "./dev.js";
-export type { AnonymousInDevOptions, ResolveRequestStateKeyOptions } from "./dev.js";
+export type { AnonymousInDevOptions, DevTokensOptions, ResolveRequestStateKeyOptions } from "./dev.js";
 export type { Attributes, Context, Logger, Principal, Span, Surface, Tenant, TraceContext, Tracer } from "./context.js";
 export type { Secret } from "./crypto.js";
 export { toJsonSchema } from "./schema.js";

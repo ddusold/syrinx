@@ -1,5 +1,6 @@
 import type { Principal } from "./context.js";
 import type { Secret } from "./crypto.js";
+import { errors } from "./errors.js";
 
 // Core carries no Node types; this also holds on runtimes without `process`.
 const env = () => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
@@ -43,6 +44,31 @@ export function anonymousInDev(
       warned = true;
       warn(`[syrinx] anonymousInDev: callers without credentials act as "${principal.id}". Development only.`);
     }
+    return principal;
+  };
+}
+
+export interface DevTokensOptions {
+  /** Overrides the production check, for tests. Defaults to `NODE_ENV === "production"`. */
+  production?: boolean;
+}
+
+/**
+ * Development only: authenticates `Authorization: Bearer <token>` against a fixed token → principal map, for demos and
+ * tests. No header is anonymous; any other header, or an unknown token, is refused. Throws at creation when `NODE_ENV`
+ * is `production`, since the tokens live in source.
+ */
+export function devTokens(tokens: Readonly<Record<string, Principal>>, options: DevTokensOptions = {}): Authenticate {
+  if (options.production ?? isProduction())
+    throw new Error("devTokens authenticates with tokens kept in source; it is not allowed in production.");
+  // Own properties only, so `toString` and friends are not tokens.
+  const principals = new Map(Object.entries(tokens));
+  return (request) => {
+    const header = request.headers.get("authorization");
+    if (header === null) return undefined;
+    const token = /^Bearer\s+(\S+)\s*$/i.exec(header)?.[1];
+    const principal = token === undefined ? undefined : principals.get(token);
+    if (!principal) throw errors.unauthenticated("Unknown token.");
     return principal;
   };
 }

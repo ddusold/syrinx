@@ -18,6 +18,7 @@ import { ModuleRef, NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
 import {
   createRegistry,
+  devTokens,
   errorKinds,
   errors,
   resolveRequestStateKey,
@@ -62,8 +63,8 @@ export interface SyrinxModuleOptions {
   /** Who is calling. Return undefined for an anonymous request, or throw `errors.unauthenticated`. */
   authenticate?: (request: Request) => Principal | undefined | Promise<Principal | undefined>;
   /**
-   * Bearer token to principal, for demos and tests; ignored when `authenticate` is set. A real app plugs its own
-   * authentication in with `authenticate`.
+   * Bearer token to principal, for demos and tests, through core's `devTokens`: the app refuses to start with it under
+   * `NODE_ENV=production`. Ignored when `authenticate` is set, which is where a real app plugs its own authentication in.
    */
   principals?: Record<string, Principal>;
   /**
@@ -190,14 +191,11 @@ export class SyrinxHost implements OnApplicationBootstrap, OnApplicationShutdown
   }
 
   private authenticator() {
-    const { authenticate, principals = {} } = this.options;
+    const { authenticate, principals } = this.options;
     if (authenticate) return authenticate;
-    return (request: Request): Principal | undefined => {
-      const header = request.headers.get("authorization");
-      if (!header) return undefined;
-      const principal = principals[header.replace(/^Bearer /, "")];
-      if (!principal) throw errors.unauthenticated("Unknown token.");
-      return principal;
+    if (principals) return devTokens(principals);
+    return (request: Request): undefined => {
+      if (request.headers.get("authorization") !== null) throw errors.unauthenticated("Unknown token.");
     };
   }
 

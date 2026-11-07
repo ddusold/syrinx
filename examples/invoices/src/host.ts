@@ -1,6 +1,6 @@
 import {
   createRegistry,
-  errors,
+  devTokens,
   resolveRequestStateKey,
   type AuditRecord,
   type Logger,
@@ -49,14 +49,6 @@ export const demoPrincipals: Record<string, Principal> = {
   writer: { id: "writer", scopes: ["invoices:read", "invoices:write"] },
 };
 
-function authenticate(request: Request): Principal | undefined {
-  const header = request.headers.get("authorization");
-  if (!header) return undefined;
-  const principal = demoPrincipals[header.replace(/^Bearer /, "")];
-  if (!principal) throw errors.unauthenticated("Unknown token.");
-  return principal;
-}
-
 export interface HostOptions {
   store?: InvoiceStore;
   /** Built view shells (`loadViewShells` from `@syrinx/ui/server`). Without them MCP serves no UI. */
@@ -69,6 +61,7 @@ export interface HostOptions {
 }
 
 export function createInvoicesHost(options: HostOptions = {}) {
+  const authenticate = devTokens(demoPrincipals);
   const directory = new Map(demoCustomers.map((c) => [c.name, c]));
   const deps: Deps & CustomerDeps = {
     store:
