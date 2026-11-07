@@ -124,7 +124,7 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
     if (principal) call.principal = principal;
     if (tenant) call.tenant = tenant;
     if (options.deps !== undefined) call.deps = options.deps;
-    if (options.logger) call.logger = options.logger;
+    if (options.logger !== undefined) call.logger = options.logger;
     if (options.tracer) call.tracer = options.tracer;
     const traceparent = c.req.header("traceparent");
     if (traceparent) {

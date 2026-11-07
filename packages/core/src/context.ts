@@ -54,12 +54,16 @@ export interface Tracer {
 const noop = () => undefined;
 export const noopLogger: Logger = Object.freeze({ debug: noop, info: noop, warn: noop, error: noop });
 /**
- * Logs an error a surface is about to report as an internal error, so the cause survives somewhere. Without a logger
- * it goes to console.error; `false` drops it. Never throws: it runs while an error response is being built.
+ * Logs a server fault so its cause survives somewhere. Without a logger it goes to console.error; `false` drops it.
+ * Never throws: it runs while a response is being built.
  */
-export function logUnhandled(logger: Logger | false | undefined, error: unknown, attributes: Attributes = {}): void {
+export function logFault(
+  logger: Logger | false | undefined,
+  message: string,
+  error: unknown,
+  attributes: Attributes = {},
+): void {
   if (logger === false) return;
-  const message = "unhandled error";
   try {
     if (!logger) {
       console.error(`syrinx: ${message}`, attributes, error);
@@ -75,6 +79,11 @@ export function logUnhandled(logger: Logger | false | undefined, error: unknown,
   } catch {
     // A failing logger must not replace the response the client is owed.
   }
+}
+
+/** Logs an error a surface is about to report as an internal error. */
+export function logUnhandled(logger: Logger | false | undefined, error: unknown, attributes: Attributes = {}): void {
+  logFault(logger, "unhandled error", error, attributes);
 }
 
 const describe = (value: unknown) => {

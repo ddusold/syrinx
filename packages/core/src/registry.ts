@@ -10,6 +10,7 @@ import {
 import { toMessages, type RenderedPrompt } from "./content.js";
 import {
   anonymous,
+  logFault,
   noopLogger,
   noopTracer,
   type Attributes,
@@ -53,7 +54,8 @@ export interface InvokeOptions<Deps = unknown> {
   /** False when the caller cannot answer questions, so ctx.confirm / ctx.ask resolve as declined. Defaults to true. */
   canAsk?: boolean;
   signal?: AbortSignal;
-  logger?: Logger;
+  /** Receives handler logs and server faults. Without one, faults go to console.error; `false` drops everything. */
+  logger?: Logger | false;
   tracer?: Tracer;
   traceContext?: TraceContext;
 }
@@ -242,7 +244,7 @@ async function run(
     "syrinx.tenant": options.tenant?.id,
     "syrinx.request_id": options.requestId,
   };
-  const log = withAttributes(options.logger ?? noopLogger, attributes);
+  const log = withAttributes(options.logger === false ? noopLogger : (options.logger ?? noopLogger), attributes);
   const span = (options.tracer ?? noopTracer).startSpan(
     `${target.kind} ${target.app}.${target.name}`,
     attributes,
@@ -436,11 +438,10 @@ export function createRegistry(apps: readonly App[], given: RegistryOptions = {}
       try {
         await (outcome ? store.complete(storeKey, token, outcome) : store.release(storeKey, token));
       } catch (error) {
-        (options.logger ?? noopLogger).error(`idempotency store ${step} failed`, {
+        logFault(options.logger, `idempotency store ${step} failed`, error, {
           "syrinx.app": appName,
           "syrinx.operation": opName,
           "syrinx.request_id": options.requestId,
-          "error.message": error instanceof Error ? error.message : String(error),
         });
       }
     };
@@ -522,10 +523,10 @@ export function createRegistry(apps: readonly App[], given: RegistryOptions = {}
           });
         } catch (error) {
           // A failed audit write must not undo or hide a write that already happened; log it loudly instead.
-          (options.logger ?? noopLogger).error("audit hook failed", {
-            error: String(error),
-            app: appName,
-            operation: opName,
+          logFault(options.logger, "audit hook failed", error, {
+            "syrinx.app": appName,
+            "syrinx.operation": opName,
+            "syrinx.request_id": options.requestId,
           });
         }
       };

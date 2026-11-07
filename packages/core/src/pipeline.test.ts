@@ -261,7 +261,32 @@ describe("audit", () => {
     await expect(
       r.invoke("invoices", "send", { id: "1" }, { principal: writer, logger: { ...noopLogger, error } }),
     ).resolves.toMatchObject({ resultType: "complete" });
-    expect(error).toHaveBeenCalledWith("audit hook failed", expect.objectContaining({ error: "Error: audit down" }));
+    expect(error).toHaveBeenCalledWith(
+      "audit hook failed",
+      expect.objectContaining({ "error.message": "audit down", "syrinx.operation": "send" }),
+    );
+  });
+
+  it("sends registry faults to console.error without a logger, and drops them with logger: false", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const r = registry({
+        audit: () => {
+          throw new Error("audit down");
+        },
+      });
+      await r.invoke("invoices", "send", { id: "1" }, { principal: writer });
+      expect(consoleError).toHaveBeenCalledWith(
+        "syrinx: audit hook failed",
+        expect.objectContaining({ "syrinx.operation": "send" }),
+        expect.objectContaining({ message: "audit down" }),
+      );
+      consoleError.mockClear();
+      await r.invoke("invoices", "send", { id: "1" }, { principal: writer, logger: false });
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 
