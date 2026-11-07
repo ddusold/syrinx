@@ -2,6 +2,7 @@ import {
   isVisible,
   logUnhandled,
   matchUriTemplate,
+  resolveRequireAuth,
   SyrinxError,
   toJsonSchema,
   type InvokeOptions,
@@ -36,6 +37,12 @@ export interface RestOptions<Deps = unknown> {
     request: Request,
   ) => Tenant | undefined | Promise<Tenant | undefined>;
   /**
+   * Answer anonymous requests with 401 on every route but /healthz, including /openapi.json and the manifests. Defaults
+   * to on under `NODE_ENV=production` and off otherwise; pass false to serve anonymous callers. On without
+   * `authenticate` throws.
+   */
+  requireAuth?: boolean;
+  /**
    * Receives operation logs and internal errors (the ones callers see only as an internal error). Without it, internal
    * errors still go to console.error; `false` drops them.
    */
@@ -52,6 +59,7 @@ export const PROBLEM_TYPE_BASE = "https://ddusold.github.io/syrinx/problems/";
 const problemType = (kind: string) => `${PROBLEM_TYPE_BASE}${kind}`;
 
 const REQUEST_ID = "syrinx.requestId";
+const PRINCIPAL = "syrinx.principal";
 
 function problem(c: Context, error: unknown, logger?: Logger | false) {
   const requestId = c.get(REQUEST_ID as never) as string | undefined;
@@ -106,6 +114,7 @@ const meta = (call: Call, replayed?: true) => {
 
 export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   const { registry } = options;
+  const requireAuth = resolveRequireAuth(options.requireAuth, options.authenticate);
   const app = new Hono();
   const etags = etag();
 
@@ -114,11 +123,29 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   // Reads get ETags so clients and caches can revalidate manifests, documents and resources cheaply.
   app.use(async (c, next) => (c.req.method === "GET" ? etags(c, next) : next()));
 
+  /** The caller, authenticated once per request. */
+  const principalOf = async (c: Context): Promise<Principal | undefined> => {
+    let found = c.get(PRINCIPAL as never) as { principal: Principal | undefined } | undefined;
+    if (!found) {
+      found = { principal: await options.authenticate?.(c.req.raw) };
+      c.set(PRINCIPAL as never, found as never);
+    }
+    return found.principal;
+  };
+  if (requireAuth) {
+    // Only this surface's routes: hosts mount MCP and view assets on the same app, and those answer for themselves.
+    const gate = async (c: Context, next: () => Promise<void>) => {
+      if (!(await principalOf(c))) throw new SyrinxError("unauthenticated", "Authentication required.");
+      await next();
+    };
+    for (const path of ["/openapi.json", "/api", "/api/*"]) app.use(path, gate);
+  }
+
   /** Per-request options shared by operations and resources: identity, tracing, request id. */
   const callOptions = async (c: Context): Promise<Call> => {
     const requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
     c.set(REQUEST_ID as never, requestId as never);
-    const principal = await options.authenticate?.(c.req.raw);
+    const principal = await principalOf(c);
     const tenant = await options.resolveTenant?.(principal, c.req.raw);
     const call: Call = { surface: "rest", signal: c.req.raw.signal, requestId };
     if (principal) call.principal = principal;

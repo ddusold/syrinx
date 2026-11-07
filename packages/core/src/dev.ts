@@ -47,6 +47,25 @@ export function anonymousInDev(
   };
 }
 
+export type ResolveRequireAuthOptions = Pick<AnonymousInDevOptions, "production">;
+
+/**
+ * Whether a surface refuses anonymous callers: `requireAuth` when given, else on under `NODE_ENV=production`. Throws
+ * when it is on but there is no `authenticate`, since every caller would then be refused.
+ */
+export function resolveRequireAuth(
+  requireAuth: boolean | undefined,
+  authenticate: unknown,
+  options: ResolveRequireAuthOptions = {},
+): boolean {
+  const required = requireAuth ?? options.production ?? isProduction();
+  if (required && !authenticate)
+    throw new Error(
+      `requireAuth is on${requireAuth === undefined ? " (the default under NODE_ENV=production)" : ""} but there is no authenticate, so every caller would be refused. Pass authenticate, or requireAuth: false to serve anonymous callers.`,
+    );
+  return required;
+}
+
 /** The environment variable `requestStateKey` is read from: one key, or several separated by commas, newest first. */
 export const REQUEST_STATE_KEY_ENV = "SYRINX_REQUEST_STATE_KEY";
 
