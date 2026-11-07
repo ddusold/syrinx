@@ -1,5 +1,6 @@
 import {
   isVisible,
+  logUnhandled,
   matchUriTemplate,
   SyrinxError,
   toJsonSchema,
@@ -34,7 +35,11 @@ export interface RestOptions<Deps = unknown> {
     principal: Principal | undefined,
     request: Request,
   ) => Tenant | undefined | Promise<Tenant | undefined>;
-  logger?: Logger;
+  /**
+   * Receives operation logs and internal errors (the ones callers see only as an internal error). Without it, internal
+   * errors still go to console.error; `false` drops them.
+   */
+  logger?: Logger | false;
   tracer?: Tracer;
   /** Served at /openapi.json and /api/{app}/openapi.json. */
   openapi?: OpenApiOptions;
@@ -48,9 +53,21 @@ const problemType = (kind: string) => `${PROBLEM_TYPE_BASE}${kind}`;
 
 const REQUEST_ID = "syrinx.requestId";
 
-function problem(c: Context, error: unknown) {
-  const e = error instanceof SyrinxError ? error : new SyrinxError("internal", "Internal error");
+function problem(c: Context, error: unknown, logger?: Logger | false) {
   const requestId = c.get(REQUEST_ID as never) as string | undefined;
+  if (!(error instanceof SyrinxError) || error.kind === "internal") {
+    const { app, op, prompt } = c.req.param() as { app?: string; op?: string; prompt?: string };
+    logUnhandled(logger, error, {
+      "syrinx.surface": "rest",
+      "syrinx.request_id": requestId,
+      "syrinx.app": app,
+      "syrinx.operation": op,
+      "syrinx.prompt": prompt,
+      "http.request.method": c.req.method,
+      "url.path": c.req.path,
+    });
+  }
+  const e = error instanceof SyrinxError ? error : new SyrinxError("internal", "Internal error");
   const body = {
     type: problemType(e.kind),
     title: e.kind,
@@ -92,7 +109,7 @@ export function createRestApp<Deps>(options: RestOptions<Deps>): Hono {
   const app = new Hono();
   const etags = etag();
 
-  app.onError((error, c) => problem(c, error));
+  app.onError((error, c) => problem(c, error, options.logger));
   app.notFound((c) => problem(c, new SyrinxError("not_found", `No route for ${c.req.method} ${c.req.path}.`)));
   // Reads get ETags so clients and caches can revalidate manifests, documents and resources cheaply.
   app.use(async (c, next) => (c.req.method === "GET" ? etags(c, next) : next()));

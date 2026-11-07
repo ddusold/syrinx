@@ -2,6 +2,7 @@ import {
   bindingComponent,
   bindingOp,
   schemaVersion,
+  logUnhandled,
   SyrinxError,
   templateVariables,
   toJsonSchema,
@@ -14,6 +15,7 @@ import {
   type Resume,
   type InvokeOptions,
   type JsonSchema,
+  type Attributes,
   type Logger,
   type Operation,
   type Principal,
@@ -112,7 +114,11 @@ export interface ProjectionOptions<Deps = unknown> {
   name: string;
   version: string;
   deps?: Deps;
-  logger?: Logger;
+  /**
+   * Receives operation logs and internal errors (the ones callers see only as an internal error). Without it, internal
+   * errors still go to console.error; `false` drops them.
+   */
+  logger?: Logger | false;
   tracer?: Tracer;
   /** How long clients may cache list results, in milliseconds. Defaults to 60 seconds. */
   listTtlMs?: number;
@@ -246,10 +252,27 @@ function callOptions(
   return call;
 }
 
-const asSyrinx = (error: unknown, logger: Logger | undefined) => {
-  if (error instanceof SyrinxError) return error;
-  logger?.error("unexpected error on the MCP surface", { error: String(error) });
-  return new SyrinxError("internal", "Internal error");
+/** The logger for routine output; `logger: false` silences it along with unhandled errors. */
+export const routineLogger = (options: Pick<ProjectionOptions, "logger">) =>
+  options.logger === false ? undefined : options.logger;
+
+/**
+ * The error the client sees, after logging internal ones. Takes the options rather than a logger so `logger: false`
+ * cannot be lost on the way to logUnhandled.
+ */
+const asSyrinx = (
+  error: unknown,
+  options: Pick<ProjectionOptions, "logger">,
+  ctx: ServerContext | undefined,
+  attributes: Attributes,
+) => {
+  if (error instanceof SyrinxError && error.kind !== "internal") return error;
+  logUnhandled(options.logger, error, {
+    "syrinx.surface": "mcp",
+    ...(ctx ? { "syrinx.request_id": String(ctx.mcpReq.id) } : {}),
+    ...attributes,
+  });
+  return error instanceof SyrinxError ? error : new SyrinxError("internal", "Internal error");
 };
 
 const details = (e: SyrinxError) => ({ kind: e.kind, message: e.message, issues: e.issues });
@@ -558,7 +581,8 @@ function registerViewChannel(
   serving: Serving,
   bound: Map<string, Binding>,
 ) {
-  const { registry, logger } = options;
+  const { registry } = options;
+  const logger = routineLogger(options);
   server.registerTool(
     VIEW_CALL_TOOL,
     {
@@ -620,7 +644,11 @@ function registerViewChannel(
         const view = binding && target ? await viewMetaFor(binding, operation, target) : undefined;
         return viewCallResult({ resultType: "complete", data: result.data, ...(view ? { view } : {}) });
       } catch (error) {
-        const e = asSyrinx(error, logger);
+        const e = asSyrinx(error, options, ctx, {
+          "syrinx.surface": "app",
+          "syrinx.app": String(app),
+          "syrinx.operation": String(operation),
+        });
         return viewCallResult({ resultType: "error", error: details(e) });
       }
     },
@@ -633,7 +661,8 @@ function registerViewChannel(
  */
 export async function buildServer(options: ProjectionOptions, scope: Scope, caller: Caller, serving: Serving) {
   const { era, connected = false } = serving;
-  const { registry, logger } = options;
+  const { registry } = options;
+  const logger = routineLogger(options);
   const cacheScope: CacheScope = registry.personalized ? "private" : "public";
   const list = { ttlMs: options.listTtlMs ?? 60_000, cacheScope };
   const instructions = typeof options.instructions === "function" ? options.instructions(caller) : options.instructions;
@@ -749,7 +778,7 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
               ...(viewMeta ? { _meta: { [VIEW_META_KEY]: viewMeta } } : {}),
             };
           } catch (error) {
-            return toolError(asSyrinx(error, logger));
+            return toolError(asSyrinx(error, options, ctx, { "syrinx.app": app.name, "syrinx.operation": opName }));
           }
         },
       );
@@ -763,7 +792,10 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
           const data = await registry.read(app.name, resName, variables, callOptions(ctx, caller, options));
           return { contents: [contents(uri.href, mimeType, data)] };
         } catch (error) {
-          throw protocolError(asSyrinx(error, logger), uri.href);
+          throw protocolError(
+            asSyrinx(error, options, ctx, { "syrinx.app": app.name, "syrinx.resource": resName }),
+            uri.href,
+          );
         }
       };
       const metadata = { ...(res.description ? { description: res.description } : {}), mimeType };
@@ -797,7 +829,10 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
             if (!shell) throw new SyrinxError("internal", `No shell for view ${viewId(v)}.`);
             return { contents: [{ uri, mimeType: VIEW_MIME_TYPE, text: shell.html, _meta: uiMeta(shell.csp) }] };
           } catch (error) {
-            throw protocolError(asSyrinx(error, logger), uri);
+            throw protocolError(
+              asSyrinx(error, options, undefined, { "syrinx.app": app.name, "syrinx.view": v.name }),
+              uri,
+            );
           }
         },
       );
@@ -815,7 +850,7 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
           if (era === "legacy" && !connected) throw legacyCannotAsk();
           return questions(rendered);
         } catch (error) {
-          throw protocolError(asSyrinx(error, logger));
+          throw protocolError(asSyrinx(error, options, ctx, { "syrinx.app": app.name, "syrinx.prompt": promptName }));
         }
       };
       const config = { ...(p.title ? { title: p.title } : {}), description: p.description };
@@ -845,7 +880,7 @@ export async function buildServer(options: ProjectionOptions, scope: Scope, call
         );
         return { completion };
       } catch (error) {
-        throw protocolError(asSyrinx(error, logger));
+        throw protocolError(asSyrinx(error, options, ctx, { "syrinx.app": target.app }));
       }
     });
   }

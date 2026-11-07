@@ -1,7 +1,14 @@
 import { lintApp, type Principal, type Tenant } from "@syrinx/core";
 import type { Transport } from "@modelcontextprotocol/server";
 import { serveStdio, type StdioServerHandle } from "@modelcontextprotocol/server/stdio";
-import { buildServer, checkMembers, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
+import {
+  buildServer,
+  checkMembers,
+  routineLogger,
+  type Caller,
+  type ProjectionOptions,
+  type Scope,
+} from "./projection.js";
 
 export interface StdioOptions<Deps = unknown> extends ProjectionOptions<Deps> {
   /** Serve one app with unprefixed names instead of every app. */
@@ -20,12 +27,13 @@ export interface StdioOptions<Deps = unknown> extends ProjectionOptions<Deps> {
  * stderr.
  */
 export function serveRegistryStdio<Deps>(options: StdioOptions<Deps>): StdioServerHandle {
+  const logger = routineLogger(options);
   const scope: Scope = options.app ? { app: options.app } : "all";
   if (options.app && !options.registry.apps.has(options.app)) throw new TypeError(`Unknown app "${options.app}".`);
   checkMembers(options.registry, scope);
   for (const app of options.registry.apps.values()) {
     for (const warning of lintApp(app)) {
-      options.logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`);
+      logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`);
     }
   }
   const caller: Caller = {};
@@ -34,6 +42,6 @@ export function serveRegistryStdio<Deps>(options: StdioOptions<Deps>): StdioServ
   return serveStdio(({ era }) => buildServer(options, scope, caller, { era, connected: true }), {
     legacy: options.legacy ?? "serve",
     ...(options.transport ? { transport: options.transport } : {}),
-    onerror: (error) => options.logger?.warn("MCP stdio error", { error: String(error) }),
+    onerror: (error) => logger?.warn("MCP stdio error", { error: String(error) }),
   });
 }

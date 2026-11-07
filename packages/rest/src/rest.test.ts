@@ -1,5 +1,16 @@
-import { createMemoryIdempotencyStore, createRegistry, defineApp, errors, op, prompt, resource } from "@syrinx/core";
-import { describe, expect, it } from "vitest";
+import {
+  createMemoryIdempotencyStore,
+  createRegistry,
+  defineApp,
+  errors,
+  noopLogger,
+  op,
+  prompt,
+  resource,
+  type Attributes,
+  type Logger,
+} from "@syrinx/core";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createOpenApiDocument, createRestApp, type OpenApiDocument } from "./index.js";
 
@@ -276,6 +287,119 @@ describe("problems", () => {
     const res = await app.request("/elsewhere");
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toBe("application/problem+json");
+  });
+});
+
+describe("unhandled errors", () => {
+  const broken = defineApp({
+    name: "broken",
+    version: "1.0.0",
+    description: "Fails on purpose.",
+    operations: {
+      explode: op({
+        description: "Throw a plain error.",
+        input: z.object({}),
+        output: z.object({}),
+        annotations: { readOnly: true },
+        handler: () => {
+          throw new TypeError("boom");
+        },
+      }),
+      misshape: op({
+        description: "Return output that breaks its schema.",
+        input: z.object({}),
+        output: z.object({ id: z.string() }),
+        annotations: { readOnly: true },
+        handler: () => ({ id: 1 }) as unknown as { id: string },
+      }),
+      refuse: op({
+        description: "Throw a Syrinx error.",
+        input: z.object({}),
+        output: z.object({}),
+        annotations: { readOnly: true },
+        handler: () => {
+          throw errors.conflict("Already sent.");
+        },
+      }),
+    },
+  });
+  const brokenRegistry = createRegistry([broken], { idempotency: false });
+  const authenticate = (request: Request) => {
+    if (request.headers.get("authorization")) throw new Error("auth backend down");
+    return undefined;
+  };
+  const capture = () => {
+    const entries: { message: string; attributes: Attributes | undefined }[] = [];
+    const logger: Logger = { ...noopLogger, error: (message, attributes) => entries.push({ message, attributes }) };
+    return { entries, logger };
+  };
+  const call = (logger: Logger | false | undefined, path = "/api/broken/ops/explode", headers = {}) =>
+    createRestApp({ registry: brokenRegistry, authenticate, ...(logger !== undefined ? { logger } : {}) }).request(
+      path,
+      {
+        method: "POST",
+        body: "{}",
+        headers: { "content-type": "application/json", "x-request-id": "req_9", ...headers },
+      },
+    );
+
+  it("logs the cause, stack and request context, and answers with a bare 500", async () => {
+    const { entries, logger } = capture();
+    const res = await call(logger);
+    expect(res.status).toBe(500);
+    expect(await json(res)).toMatchObject({ detail: "Internal error", requestId: "req_9" });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      message: "unhandled error",
+      attributes: {
+        "syrinx.surface": "rest",
+        "syrinx.request_id": "req_9",
+        "syrinx.app": "broken",
+        "syrinx.operation": "explode",
+        "http.request.method": "POST",
+        "error.type": "TypeError",
+        "error.message": "boom",
+        "error.stack": expect.stringContaining("TypeError: boom") as string,
+      },
+    });
+  });
+
+  it("logs errors thrown by surface hooks such as authenticate", async () => {
+    const { entries, logger } = capture();
+    expect((await call(logger, "/api/broken/ops/explode", { authorization: "Bearer x" })).status).toBe(500);
+    expect(entries[0]?.attributes).toMatchObject({
+      "error.message": "auth backend down",
+      "syrinx.request_id": "req_9",
+    });
+  });
+
+  it("logs internal Syrinx errors, which are server bugs too", async () => {
+    const { entries, logger } = capture();
+    expect((await call(logger, "/api/broken/ops/misshape")).status).toBe(500);
+    expect(entries[0]?.attributes).toMatchObject({ "syrinx.operation": "misshape", "error.type": "SyrinxError" });
+  });
+
+  it("does not log Syrinx errors, which the client already sees", async () => {
+    const { entries, logger } = capture();
+    expect((await call(logger, "/api/broken/ops/refuse")).status).toBe(409);
+    expect(entries).toEqual([]);
+  });
+
+  it("falls back to console.error without a logger, and stays quiet with logger: false", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await call(undefined);
+      expect(spy).toHaveBeenCalledWith(
+        "syrinx: unhandled error",
+        expect.objectContaining({ "syrinx.request_id": "req_9" }),
+        expect.any(TypeError),
+      );
+      spy.mockClear();
+      await call(false);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

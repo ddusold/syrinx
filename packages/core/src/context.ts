@@ -53,6 +53,38 @@ export interface Tracer {
 
 const noop = () => undefined;
 export const noopLogger: Logger = Object.freeze({ debug: noop, info: noop, warn: noop, error: noop });
+/**
+ * Logs an error a surface is about to report as an internal error, so the cause survives somewhere. Without a logger
+ * it goes to console.error; `false` drops it. Never throws: it runs while an error response is being built.
+ */
+export function logUnhandled(logger: Logger | false | undefined, error: unknown, attributes: Attributes = {}): void {
+  if (logger === false) return;
+  const message = "unhandled error";
+  try {
+    if (!logger) {
+      console.error(`syrinx: ${message}`, attributes, error);
+      return;
+    }
+    const e = error instanceof Error ? error : undefined;
+    logger.error(message, {
+      ...attributes,
+      "error.type": e ? e.constructor.name : typeof error,
+      "error.message": e ? e.message : describe(error),
+      "error.stack": e?.stack,
+    });
+  } catch {
+    // A failing logger must not replace the response the client is owed.
+  }
+}
+
+const describe = (value: unknown) => {
+  try {
+    return String(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
+};
+
 export const noopTracer: Tracer = Object.freeze({
   startSpan: () => ({ setAttribute: noop, addEvent: noop, recordException: noop, end: noop }),
 });

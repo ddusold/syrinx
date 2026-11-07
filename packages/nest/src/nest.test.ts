@@ -1,10 +1,10 @@
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Body, Controller, Get, Injectable, Module, Post, type INestApplication } from "@nestjs/common";
+import { Body, Controller, Get, Injectable, Logger, Module, Post, type INestApplication } from "@nestjs/common";
 import { defineApp, errors, op, SyrinxError } from "@syrinx/core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { createSyrinxApp, listen, remoteApp, SyrinxModule, type NestContext } from "./index.js";
+import { createSyrinxApp, listen, nestLogger, remoteApp, SyrinxModule, type NestContext } from "./index.js";
 
 @Injectable()
 class Greeter {
@@ -153,5 +153,22 @@ describe("remoteApp", () => {
     // A service that is not there is a bad gateway, not a crash.
     const gone = remoteApp<typeof greetings>({ app: "greetings", base: "http://localhost:1/api" });
     await expect(gone.greet({ name: "x" })).rejects.toMatchObject({ kind: "upstream" });
+  });
+});
+
+describe("nestLogger", () => {
+  it("writes through Nest's logger, passing the stack apart so Nest prints it beneath the line", () => {
+    const error = vi.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    try {
+      const logger = nestLogger();
+      logger.error("unhandled error", { "syrinx.app": "a", "error.stack": "Error: x\n    at f (file.ts:1:1)" });
+      logger.warn("lint");
+      expect(error).toHaveBeenCalledWith('unhandled error {"syrinx.app":"a"}', "Error: x\n    at f (file.ts:1:1)");
+      expect(warn).toHaveBeenCalledWith("lint");
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
   });
 });

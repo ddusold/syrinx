@@ -1,4 +1,4 @@
-import { lintApp, SyrinxError, type Principal, type Tenant } from "@syrinx/core";
+import { lintApp, logUnhandled, SyrinxError, type Principal, type Tenant } from "@syrinx/core";
 import {
   createMcpHandler,
   getOAuthProtectedResourceMetadataUrl,
@@ -10,7 +10,14 @@ import {
   type AuthMetadataOptions,
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
-import { buildServer, checkMembers, type Caller, type ProjectionOptions, type Scope } from "./projection.js";
+import {
+  buildServer,
+  checkMembers,
+  routineLogger,
+  type Caller,
+  type ProjectionOptions,
+  type Scope,
+} from "./projection.js";
 
 export {
   APPS_EXTENSION,
@@ -71,10 +78,14 @@ export interface McpSurface {
 const CALLER = `syrinx.caller`;
 
 const jsonRpcError = (status: number, message: string, headers: Record<string, string> = {}) =>
-  new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message } }), {
-    status,
-    headers: { "content-type": "application/json", ...headers },
-  });
+  // -32603 is JSON-RPC's internal error; everything else refused at the edge is an invalid request.
+  new Response(
+    JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: status >= 500 ? -32603 : -32600, message } }),
+    {
+      status,
+      headers: { "content-type": "application/json", ...headers },
+    },
+  );
 
 /**
  * Every exchange is one JSON response, so the long-lived `subscriptions/listen` stream the SDK would otherwise open
@@ -157,18 +168,17 @@ async function gzipped(request: Request, response: Response, method: string | un
  */
 export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
   const { registry } = options;
+  const logger = routineLogger(options);
   const basePath = (options.basePath ?? "/mcp").replace(/\/$/, "");
   checkMembers(registry, "all");
   const withViews = [...registry.apps.values()].filter((a) => Object.keys(a.views).length).map((a) => a.name);
   if (withViews.length && !options.views) {
-    options.logger?.warn(
-      `MCP: apps ${withViews.join(", ")} declare views, but no view shells were given; serving without UI.`,
-    );
+    logger?.warn(`MCP: apps ${withViews.join(", ")} declare views, but no view shells were given; serving without UI.`);
   }
   for (const app of registry.apps.values()) {
     checkMembers(registry, { app: app.name });
     for (const warning of lintApp(app)) {
-      options.logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`, { target: warning.target });
+      logger?.warn(`MCP description lint: ${warning.target} ${warning.message}`, { target: warning.target });
     }
   }
 
@@ -186,7 +196,7 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
         {
           legacy: options.legacy ?? "stateless",
           responseMode: "json",
-          onerror: (error) => options.logger?.warn("MCP request rejected", { error: String(error) }),
+          onerror: (error) => logger?.warn("MCP request rejected", { error: String(error) }),
         },
       );
       handlers.set(key, handler);
@@ -212,7 +222,8 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
         const metadata = oauthMetadataResponse(request, options.oauth);
         if (metadata) return metadata;
       }
-      const scope = scopeOf(new URL(request.url).pathname);
+      const { pathname } = new URL(request.url);
+      const scope = scopeOf(pathname);
       if (!scope) return jsonRpcError(404, "Not found.");
       const listen = await listenRequestId(request);
       if (listen !== undefined) return methodNotFound(listen, "subscriptions/listen");
@@ -229,18 +240,20 @@ export function createMcpSurface<Deps>(options: McpOptions<Deps>): McpSurface {
       if (rejected) return rejected;
 
       let principal: Principal | undefined;
+      let tenant: Tenant | undefined;
       try {
         principal = await options.authenticate?.(request);
+        if (!principal && options.requireAuth) {
+          return jsonRpcError(401, "Authentication required.", { "www-authenticate": challenge });
+        }
+        tenant = await options.resolveTenant?.(principal, request);
       } catch (error) {
         if (error instanceof SyrinxError && error.kind === "unauthenticated") {
           return jsonRpcError(401, error.message, { "www-authenticate": challenge });
         }
-        throw error;
+        logUnhandled(options.logger, error, { "syrinx.surface": "mcp", "url.path": pathname });
+        return jsonRpcError(500, "Internal error");
       }
-      if (!principal && options.requireAuth) {
-        return jsonRpcError(401, "Authentication required.", { "www-authenticate": challenge });
-      }
-      const tenant = await options.resolveTenant?.(principal, request);
       const caller: Caller = {};
       if (principal) caller.principal = principal;
       if (tenant) caller.tenant = tenant;
